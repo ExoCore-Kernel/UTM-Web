@@ -1,27 +1,46 @@
 # UTM-Web
 
-UTM-Web is an early browser UI port of the UTM virtual machine app. Right now it is a frontend-only prototype: no VM runtime, no backend, and no real disk, network, display, or JIT execution yet.
+UTM-Web is a browser-first UTM prototype. It keeps the iOS/iPadOS-style UTM shell, but now only exposes features that can honestly work in a static browser app.
 
-The goal is to evolve this into a JIT-enabled UTM port for web browsers. This first version focuses on matching the iOS and iPadOS UTM experience closely enough that the real runtime work can be wired in later.
+Live app: https://exocore-kernel.github.io/UTM-Web/
 
 ## Current Scope
 
-- Touch-first iPhone-style UTM library UI
-- iPadOS-style split view for wider screens
-- Fake VM creation through UTM-like setup wizard pages
-- Editable fake VM settings using grouped iOS form/list styling
-- Static VM display surface with floating toolbar
-- UTM source assets copied locally where available
-- SF Symbol-inspired fallback icons for controls that are `systemImage` values in UTM's SwiftUI source
+- Touch-first UTM library, details, setup wizard, and settings UI
+- Real QEMU command generation from VM settings
+- Hosted QEMU-WASM Alpine Linux boot target
+- Local QEMU-WASM runtime drop-in path for custom Linux configs
+- Transient browser file selection for kernel/initrd/disk images
+- Export/import of `.utmweb.json` launch configs
+- Copyable generated QEMU arguments
 
-## Not Implemented Yet
+## Removed From The Prototype
 
-- QEMU runtime
-- JIT execution
-- VM storage
+These UTM-native features are intentionally not shown because a static browser app cannot provide them directly:
+
+- Apple Virtualization
+- Windows and Classic Mac OS setup flows
 - SPICE display streaming
-- USB, audio, networking, or clipboard integration
-- Real import/export of `.utm` packages
+- USB passthrough
+- TPM/Secure Boot
+- Host audio devices
+- Native host networking and port forwarding
+- Persistent sparse disk creation
+
+## QEMU-WASM
+
+The live Alpine target is based on:
+
+- https://github.com/ktock/qemu-wasm-demo
+- https://github.com/ktock/qemu-wasm-sample
+
+For custom Linux configs, place a QEMU-WASM build in:
+
+```text
+vendor/qemu-wasm/
+```
+
+See [vendor/qemu-wasm/README.md](vendor/qemu-wasm/README.md) for the expected file layout.
 
 ## Run Locally
 
@@ -44,11 +63,14 @@ The UI is modeled from the UTM SwiftUI source in `UTM-main`, especially:
 - `Platform/iOS/VMWizardView.swift`
 - `Platform/iOS/VMSettingsView.swift`
 - `Platform/iOS/VMToolbarView.swift`
-- `Platform/Shared/VMNavigationListView.swift`
-- `Platform/Shared/VMCardView.swift`
-- `Platform/Shared/VMDetailsView.swift`
 - `Platform/Shared/VMWizard*.swift`
 - `Platform/Shared/VMConfig*.swift`
+
+The QEMU launch-plan shape follows:
+
+- `Configuration/QEMUArgumentBuilder.swift`
+- `Configuration/UTMQemuConfiguration+Arguments.swift`
+- `Configuration/UTMQemuConfigurationSystem.swift`
 
 ## License
 
