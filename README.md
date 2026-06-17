@@ -1,46 +1,61 @@
 # UTM-Web
 
-UTM-Web is a browser-first UTM prototype. It keeps the iOS/iPadOS-style UTM shell, but now only exposes features that can honestly work in a static browser app.
+UTM-Web is a browser-first UTM prototype. It keeps the iOS/iPadOS-style UTM shell while only exposing VM features that can honestly run from a static web app.
 
 Live app: https://exocore-kernel.github.io/UTM-Web/
 
 ## Current Scope
 
-- Touch-first UTM library, details, setup wizard, and settings UI
-- Real QEMU command generation from VM settings
-- Hosted QEMU-WASM Alpine Linux boot target
-- Local QEMU-WASM runtime drop-in path for custom Linux configs
-- Transient browser file selection for kernel/initrd/disk images
+- Touch-first UTM library, detail view, setup wizard, and VM settings UI
+- Local QEMU-WASM runtime from the `external/qemu-wasm-demo` Git submodule
+- Packaged Alpine Linux boot target loaded from the repository, not an external demo page
+- Custom ISO, kernel, initrd, raw disk, qcow2 disk, and vmdk disk import into browser IndexedDB storage
+- QEMU launch arguments generated directly from VM settings
+- Serial console with local PTY input/output for the bundled upstream runtime
+- Graphical display mode that attaches `Module.canvas`, uses `-display sdl,gl=off`, and forwards mouse/touch pointer input for canvas-enabled QEMU-WASM builds
+- Disk save-back from `/utm/disk.img` into the stored browser blob with the display `SAVE` button
 - Export/import of `.utmweb.json` launch configs
-- Copyable generated QEMU arguments
+
+## Runtime
+
+The QEMU-WASM runtime is vendored as a submodule:
+
+```sh
+git submodule update --init --recursive --depth 1
+```
+
+The app currently targets the x86_64 build from:
+
+- https://github.com/ktock/qemu-wasm-demo
+- https://github.com/ktock/qemu-wasm-sample
+
+GitHub Pages deploys with recursive submodules, and the `Update QEMU-WASM` workflow refreshes the submodule pointer weekly or on manual dispatch.
+
+The included x86_64 demo build is serial-first. UTM-Web exposes a graphical display mode and canvas input path, but graphical guests need a QEMU-WASM build compiled with browser canvas/SDL display support.
+
+## Custom Media And Disk State
+
+Custom VM media is stored in IndexedDB, so selected ISO and disk images remain available after reloads in the same browser profile. For ISO installs, attach a writable disk image as the VM disk. When the guest has flushed its disk writes, use `SAVE` in the VM display toolbar to copy the current `/utm/disk.img` bytes back into IndexedDB.
+
+Disk format is inferred from the filename:
+
+- `.qcow2` / `.qcow` -> `format=qcow2`
+- `.vmdk` -> `format=vmdk`
+- everything else -> `format=raw`
+
+Browser storage quotas still apply, so large ISOs and disks may fail to import on some devices.
 
 ## Removed From The Prototype
 
-These UTM-native features are intentionally not shown because a static browser app cannot provide them directly:
+These UTM-native features are intentionally hidden because a static browser app cannot provide them directly:
 
 - Apple Virtualization
-- Windows and Classic Mac OS setup flows
 - SPICE display streaming
 - USB passthrough
 - TPM/Secure Boot
 - Host audio devices
 - Native host networking and port forwarding
-- Persistent sparse disk creation
-
-## QEMU-WASM
-
-The live Alpine target is based on:
-
-- https://github.com/ktock/qemu-wasm-demo
-- https://github.com/ktock/qemu-wasm-sample
-
-For custom Linux configs, place a QEMU-WASM build in:
-
-```text
-vendor/qemu-wasm/
-```
-
-See [vendor/qemu-wasm/README.md](vendor/qemu-wasm/README.md) for the expected file layout.
+- Sparse disk creation
 
 ## Run Locally
 
@@ -55,6 +70,8 @@ Then open:
 ```text
 http://127.0.0.1:4173/
 ```
+
+The app registers `coi-serviceworker.js` on localhost/HTTPS so the QEMU-WASM pthread build gets COOP/COEP isolation.
 
 ## Source Reference
 

@@ -207,6 +207,8 @@ textarea {
 }
 
 .row + .row,
+.row + .nav-row,
+.nav-row + .row,
 .nav-row + .nav-row,
 .choice-row + .choice-row,
 .vm-row + .vm-row {
@@ -540,7 +542,7 @@ textarea {
   text-align: left;
 }
 
-.fake-file {
+.media-file {
   display: none;
 }
 
@@ -680,13 +682,28 @@ textarea {
   background: #000;
 }
 
-.runtime-frame {
+.qemu-canvas {
   position: absolute;
   inset: 0;
+  display: block;
   width: 100%;
   height: 100%;
-  border: 0;
+  outline: 0;
   background: #000;
+  touch-action: none;
+}
+
+.display-surface.serial .qemu-canvas {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.display-surface.graphical .terminal-output {
+  top: auto;
+  max-height: 31vh;
+  padding: 14px 14px 52px;
+  background: rgba(5, 5, 6, .78);
+  backdrop-filter: blur(14px);
 }
 
 .terminal-output {
@@ -700,11 +717,8 @@ textarea {
   font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
+  outline: 0;
   white-space: pre-wrap;
-}
-
-.runtime-frame + .terminal-output {
-  display: none;
 }
 
 .floating-toolbar {
