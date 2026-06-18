@@ -7,43 +7,39 @@ Live app: https://exocore-kernel.github.io/UTM-Web/
 ## Current Scope
 
 - Touch-first UTM library, detail view, setup wizard, and VM settings UI
-- Local QEMU-WASM runtime from the `external/qemu-wasm-demo` Git submodule
-- Packaged Alpine Linux boot target loaded from the repository, not an external demo page
-- Custom ISO, kernel, initrd, raw disk, qcow2 disk, and vmdk disk import into browser IndexedDB storage
-- QEMU launch arguments generated directly from VM settings
-- Serial console with local PTY input/output for the bundled upstream runtime
-- Graphical display mode that attaches `Module.canvas`, uses `-display sdl,gl=off`, and forwards mouse/touch pointer input for canvas-enabled QEMU-WASM builds
-- Disk save-back from `/utm/disk.img` into the stored browser blob with the display `SAVE` button
+- Local v86 runtime vendored in `vendor/v86`
+- Real VGA display through v86's browser screen adapter
+- Mouse, touch, keyboard, and serial-log input routed through v86
+- Custom ISO, raw disk, floppy image, Linux bzImage, initrd, and v86 state import into browser IndexedDB storage
+- VM settings mapped into actual v86 options such as memory, VGA memory, boot media, boot order, and initial state
+- v86 save-state snapshots stored locally with the display `SAVE` button
 - Export/import of `.utmweb.json` launch configs
 
 ## Runtime
 
-The QEMU-WASM runtime is vendored as a submodule:
+The browser backend is v86:
 
-```sh
-git submodule update --init --recursive --depth 1
-```
+- Runtime package: https://github.com/copy/v86
+- Local files: `vendor/v86/build/libv86.mjs`, `vendor/v86/build/v86.wasm`, and `vendor/v86/build/v86-fallback.wasm`
+- BIOS files: `vendor/v86/bios/seabios.bin` and `vendor/v86/bios/vgabios.bin`
 
-The app currently targets the x86_64 build from:
+The runtime is loaded from this repository, so GitHub Pages does not redirect to an external emulator demo.
 
-- https://github.com/ktock/qemu-wasm-demo
-- https://github.com/ktock/qemu-wasm-sample
+## Custom Media And State
 
-GitHub Pages deploys with recursive submodules, and the `Update QEMU-WASM` workflow refreshes the submodule pointer weekly or on manual dispatch.
+Custom VM media is stored in IndexedDB, so selected media remains available after reloads in the same browser profile.
 
-The included x86_64 demo build is serial-first. UTM-Web exposes a graphical display mode and canvas input path, but graphical guests need a QEMU-WASM build compiled with browser canvas/SDL display support.
+Supported boot media:
 
-## Custom Media And Disk State
+- ISO: attached as v86 `cdrom`
+- Raw disk/image: attached as v86 `hda`
+- Floppy image: attached as v86 `fda`
+- Linux bzImage/initrd: attached as v86 `bzimage` and `initrd`
+- Save state: attached as v86 `initial_state`
 
-Custom VM media is stored in IndexedDB, so selected ISO and disk images remain available after reloads in the same browser profile. For ISO installs, attach a writable disk image as the VM disk. When the guest has flushed its disk writes, use `SAVE` in the VM display toolbar to copy the current `/utm/disk.img` bytes back into IndexedDB.
+Use `SAVE` in the VM display toolbar to store a v86 machine-state snapshot. Restoring a state requires the same VM settings and media layout that created it.
 
-Disk format is inferred from the filename:
-
-- `.qcow2` / `.qcow` -> `format=qcow2`
-- `.vmdk` -> `format=vmdk`
-- everything else -> `format=raw`
-
-Browser storage quotas still apply, so large ISOs and disks may fail to import on some devices.
+Browser storage quotas still apply, so large ISOs, disk images, and state files may fail to import or save on some devices.
 
 ## Removed From The Prototype
 
@@ -56,6 +52,7 @@ These UTM-native features are intentionally hidden because a static browser app 
 - Host audio devices
 - Native host networking and port forwarding
 - Sparse disk creation
+- Architectures not supported by the vendored v86 runtime
 
 ## Run Locally
 
@@ -71,7 +68,7 @@ Then open:
 http://127.0.0.1:4173/
 ```
 
-The app registers `coi-serviceworker.js` on localhost/HTTPS so the QEMU-WASM pthread build gets COOP/COEP isolation.
+The app registers `coi-serviceworker.js` on localhost/HTTPS so WebAssembly runtimes can use browser isolation when needed.
 
 ## Source Reference
 
@@ -83,12 +80,15 @@ The UI is modeled from the UTM SwiftUI source in `UTM-main`, especially:
 - `Platform/Shared/VMWizard*.swift`
 - `Platform/Shared/VMConfig*.swift`
 
-The QEMU launch-plan shape follows:
+The runtime mapping references the local `v86-master` source, especially:
 
-- `Configuration/QEMUArgumentBuilder.swift`
-- `Configuration/UTMQemuConfiguration+Arguments.swift`
-- `Configuration/UTMQemuConfigurationSystem.swift`
+- `src/browser/starter.js`
+- `src/browser/screen.js`
+- `src/browser/mouse.js`
+- `v86.d.ts`
 
 ## License
 
 This prototype includes assets and UI references from UTM. UTM is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+
+The vendored v86 runtime is licensed under BSD-2-Clause. See [vendor/v86/LICENSE](vendor/v86/LICENSE).

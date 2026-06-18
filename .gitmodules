@@ -1,4 +1,0 @@
-[submodule "external/qemu-wasm-demo"]
-	path = external/qemu-wasm-demo
-	url = https://github.com/ktock/qemu-wasm-demo.git
-	branch = main

@@ -682,7 +682,7 @@ textarea {
   background: #000;
 }
 
-.qemu-canvas {
+.v86-screen {
   position: absolute;
   inset: 0;
   display: block;
@@ -693,7 +693,31 @@ textarea {
   touch-action: none;
 }
 
-.display-surface.serial .qemu-canvas {
+.v86-screen canvas,
+.v86-screen > div {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.v86-screen canvas {
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #000;
+}
+
+.v86-screen > div {
+  overflow: hidden;
+  color: #d6ffe2;
+  background: #000;
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.2;
+  white-space: pre;
+}
+
+.display-surface.serial .v86-screen {
   opacity: 0;
   pointer-events: none;
 }

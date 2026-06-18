@@ -5,10 +5,9 @@
   - UTM-main/Platform/iOS/VMSettingsView.swift
   - UTM-main/Platform/iOS/VMToolbarView.swift
   Runtime references:
-  - UTM-main/Configuration/QEMUArgumentBuilder.swift
-  - UTM-main/Configuration/UTMQemuConfiguration+Arguments.swift
-  - https://github.com/ktock/qemu-wasm-demo
-  - https://github.com/ktock/qemu-wasm-sample
+  - UTM-main/Configuration/UTMQemuConfiguration.swift
+  - /Users/jackpilkington/Documents/Playground/v86-master/src/browser/starter.js
+  - /Users/jackpilkington/Documents/Playground/v86-master/v86.d.ts
 */
 
 const assets = {
@@ -17,22 +16,24 @@ const assets = {
   alpine: "assets/Icons/alpine.png"
 };
 
-const qemuWasm = {
-  root: "external/qemu-wasm-demo/docs/images/alpine-x86_64/",
-  module: "external/qemu-wasm-demo/docs/images/alpine-x86_64/out.js",
-  docs: "external/qemu-wasm-demo/README.md",
-  upstream: "https://github.com/ktock/qemu-wasm-demo",
-  packageLoaders: {
-    rom: "external/qemu-wasm-demo/docs/images/alpine-x86_64/load-rom.js",
-    kernel: "external/qemu-wasm-demo/docs/images/alpine-x86_64/load-kernel.js",
-    initramfs: "external/qemu-wasm-demo/docs/images/alpine-x86_64/load-initramfs.js",
-    rootfs: "external/qemu-wasm-demo/docs/images/alpine-x86_64/load-rootfs.js"
+const v86Runtime = {
+  module: "vendor/v86/build/libv86.mjs",
+  wasm: "vendor/v86/build/v86.wasm",
+  fallbackWasm: "vendor/v86/build/v86-fallback.wasm",
+  bios: "vendor/v86/bios/seabios.bin",
+  vgaBios: "vendor/v86/bios/vgabios.bin",
+  docs: "vendor/v86/Readme.md",
+  upstream: "https://github.com/copy/v86",
+  bootOrders: {
+    cdrom: 0x123,
+    disk: 0x132,
+    floppy: 0x231,
+    auto: 0
   }
 };
 
 const supportedMachines = [
-  { title: "Intel ICH9 based PC (Q35, x86_64)", arch: "x86_64", target: "q35", memory: 512, storage: 1, cpu: 1 },
-  { title: "Intel i440FX based PC (PC, x86_64)", arch: "x86_64", target: "pc", memory: 512, storage: 1, cpu: 1 }
+  { title: "v86 PC (x86)", arch: "x86", target: "pc", memory: 256, storage: 1, cpu: 1 }
 ];
 
 const storageDbName = "utm-web-storage";
@@ -40,50 +41,30 @@ const storageStoreName = "files";
 
 const defaults = {
   route: { name: "library" },
-  selectedId: "alpine-demo",
+  selectedId: "custom-pc",
   editingId: null,
   draft: null,
   wizard: null,
   actionSheet: null,
   vms: [
     {
-      id: "alpine-demo",
-      name: "Alpine Linux",
-      os: "Linux",
-      status: "Ready",
-      icon: assets.alpine,
-      notes: "A local QEMU-WASM VM backed by the qemu-wasm-demo submodule in this repository. It boots the packaged Alpine kernel, initramfs, and rootfs without redirecting to another site.",
-      runtime: "local-qemu-wasm",
-      architecture: "x86_64",
-      machine: "pc",
-      memory: 512,
-      cpu: 1,
-      storage: 1,
-      displayMode: "serial",
-      bootType: "packaged-demo",
-      bootArguments: "console=ttyS0 root=/dev/vda noautodetect hostname=demo",
-      fileRefs: {},
-      qemuArgs: [],
-      network: "none"
-    },
-    {
-      id: "linux-custom",
-      name: "Custom Linux",
+      id: "custom-pc",
+      name: "Custom x86 PC",
       os: "Linux",
       status: "Stopped",
       icon: assets.linux,
-      notes: "A local QEMU-WASM configuration. Import an ISO, kernel, or disk image into browser storage and boot it with the vendored QEMU-WASM submodule.",
-      runtime: "local-qemu-wasm",
-      architecture: "x86_64",
-      machine: "q35",
-      memory: 512,
+      notes: "A local v86 PC configuration. Import an ISO, raw disk, floppy image, or Linux bzImage into browser storage and boot it with the vendored v86 runtime.",
+      runtime: "local-v86",
+      architecture: "x86",
+      machine: "pc",
+      memory: 256,
       cpu: 1,
-      storage: 2,
-      displayMode: "serial",
+      storage: 1,
+      vgaMemory: 8,
+      displayMode: "graphical",
       bootType: "iso",
-      bootArguments: "console=ttyS0 root=/dev/vda rw",
+      bootArguments: "",
       fileRefs: {},
-      qemuArgs: [],
       network: "none"
     }
   ]
@@ -100,10 +81,11 @@ function loadState() {
     const saved = JSON.parse(localStorage.getItem("utm-web-state") || "null");
     if (saved && Array.isArray(saved.vms)) {
       const defaultIds = new Set(defaults.vms.map(vm => vm.id));
+      const legacyDefaultIds = new Set(["alpine-demo", "linux-custom"]);
       const migrated = saved.vms
         .map(migrateVM)
         .filter(Boolean)
-        .filter(vm => !defaultIds.has(vm.id));
+        .filter(vm => !defaultIds.has(vm.id) && !legacyDefaultIds.has(vm.id));
       const vms = [...structuredClone(defaults.vms), ...migrated];
       const selectedId = vms.some(vm => vm.id === saved.selectedId) ? saved.selectedId : defaults.selectedId;
       return {
@@ -124,38 +106,27 @@ function loadState() {
 
 function migrateVM(vm) {
   if (!vm || typeof vm !== "object") return null;
-  if (vm.runtime && vm.runtime !== "local-qemu-wasm") return structuredClone(defaults.vms[0]);
-  if (vm.runtime === "local-qemu-wasm") {
-    const migrated = {
-      ...structuredClone(defaults.vms[1]),
-      ...vm,
-      os: "Linux",
-      runtime: "local-qemu-wasm",
-      status: vm.bootType === "packaged-demo" ? "Ready" : "Stopped",
-      displayMode: vm.displayMode === "graphical" ? "graphical" : "serial",
-      fileRefs: vm.fileRefs || {}
-    };
-    if (/runtime files|hosted demo|demo site/i.test(migrated.notes || "")) {
-      migrated.notes = vm.id === defaults.vms[1].id
-        ? defaults.vms[1].notes
-        : "Local browser VM config generated from UTM-Web. Import boot media into browser storage, then run it with the vendored QEMU-WASM engine.";
-    }
-    return migrated;
-  }
-  if (vm.os === "Linux" || ["x86_64", "i386"].includes(vm.architecture)) {
+  const legacyRuntime = vm.runtime && vm.runtime !== "local-v86";
+  if (vm.runtime === "local-v86" || legacyRuntime || vm.os === "Linux" || ["x86", "x86_64", "i386"].includes(vm.architecture)) {
+    const bootType = vm.bootType === "packaged-demo" ? "iso" : (vm.bootType || "iso");
     return {
-      ...structuredClone(defaults.vms[1]),
+      ...structuredClone(defaults.vms[0]),
       id: vm.id || `vm-${Date.now()}`,
       name: vm.name || "Linux",
-      notes: vm.notes || "Migrated from an older UTM-Web mock VM into a local QEMU-WASM launch config.",
-      architecture: ["x86_64", "i386"].includes(vm.architecture) ? vm.architecture : "x86_64",
-      machine: vm.machine === "pc" || vm.machine === "q35" ? vm.machine : "q35",
-      memory: Number(vm.memory || 512),
-      cpu: Math.max(1, Number(vm.cpu || 1)),
-      storage: Number(vm.storage || 2),
-      displayMode: vm.displayMode === "graphical" ? "graphical" : "serial",
-      bootArguments: vm.bootArguments || "console=ttyS0 root=/dev/vda rw",
-      fileRefs: {},
+      notes: /runtime files|hosted demo|demo site/i.test(vm.notes || "")
+        ? "Migrated to the local v86 runtime. Reattach boot media if the old demo files were used."
+        : (vm.notes || "Local browser VM config generated from UTM-Web for v86."),
+      runtime: "local-v86",
+      architecture: "x86",
+      machine: "pc",
+      memory: Math.max(16, Number(vm.memory || 256)),
+      cpu: 1,
+      storage: Number(vm.storage || 1),
+      vgaMemory: Number(vm.vgaMemory || 8),
+      displayMode: vm.displayMode === "serial" ? "serial" : "graphical",
+      bootType,
+      bootArguments: vm.bootArguments || "",
+      fileRefs: vm.fileRefs || {},
       status: "Stopped"
     };
   }
@@ -226,6 +197,22 @@ async function importFileToStore(file, role) {
     lastModified: file.lastModified || Date.now(),
     savedAt: Date.now(),
     blob: file
+  };
+  await putRecord(record);
+  return fileMeta(record);
+}
+
+async function putBytesToStore(name, role, bytes, type = "application/octet-stream") {
+  const blob = new Blob([bytes], { type });
+  const record = {
+    id: storageId(role),
+    role,
+    name,
+    size: blob.size,
+    type,
+    lastModified: Date.now(),
+    savedAt: Date.now(),
+    blob
   };
   await putRecord(record);
   return fileMeta(record);
@@ -414,8 +401,10 @@ function fileAccept(key) {
   return {
     kernel: ".bin,.elf,.img,vmlinuz",
     initrd: ".img,.initrd,.gz",
-    disk: ".qcow2,.qcow,.vmdk,.raw,.img",
-    cdrom: ".iso,.img"
+    disk: ".raw,.img,.qcow2,.qcow,.vmdk",
+    cdrom: ".iso,.img",
+    floppy: ".img,.ima,.flp",
+    state: ".bin,.v86state"
   }[key] || "";
 }
 
@@ -499,7 +488,7 @@ function renderDetail() {
 }
 
 function renderDetailBody(vm) {
-  const plan = buildQemuPlan(vm);
+  const config = formatV86Config(vm);
   const missing = requiredFileKeys(vm).filter(key => !vm.fileRefs?.[key]);
   return `
     <section class="runtime-preview">
@@ -516,6 +505,7 @@ function renderDetailBody(vm) {
         ${row("Architecture", vm.architecture)}
         ${row("Machine", vm.machine)}
         ${row("Memory", `${vm.memory} MiB`)}
+        ${row("VGA Memory", `${vm.vgaMemory || 8} MiB`)}
         ${row("Display", displayLabel(vm))}
         ${row("Boot", bootLabel(vm))}
         ${row("Network", networkLabel(vm))}
@@ -533,16 +523,17 @@ function renderDetailBody(vm) {
         <div class="group">
           ${Object.entries(vm.fileRefs).map(([key, file]) => row(fileTitle(key), `${file.name} · ${formatBytes(file.size)}`)).join("")}
           ${vm.fileRefs?.disk ? navRow("Download Disk Image", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'disk')`) : ""}
+          ${vm.fileRefs?.state ? navRow("Download Save State", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'state')`) : ""}
         </div>
       </section>
     ` : ""}
     <section class="section">
-      <p class="section-title">QEMU</p>
+      <p class="section-title">v86</p>
       <div class="group">
-        ${navRow("Copy Arguments", "sf:doc.on.clipboard", "icon-blue", `copyQemuArgs('${vm.id}')`)}
+        ${navRow("Copy Launch Config", "sf:doc.on.clipboard", "icon-blue", `copyV86Config('${vm.id}')`)}
         ${navRow("Export Config", "sf:square.and.arrow.down", "icon-green", `exportConfig('${vm.id}')`)}
       </div>
-      ${codeBlock(`${plan.executable} ${shellQuoteArgs(plan.args)}`)}
+      ${codeBlock(config)}
     </section>
     <section class="section">
       <p class="section-title">Notes</p>
@@ -552,7 +543,7 @@ function renderDetailBody(vm) {
 }
 
 function runtimeLabel(vm) {
-  return "Local QEMU-WASM";
+  return "Local v86";
 }
 
 function networkLabel(vm) {
@@ -560,20 +551,20 @@ function networkLabel(vm) {
 }
 
 function displayLabel(vm) {
-  return vm.displayMode === "graphical" ? "Graphical display" : "Serial console";
+  return vm.displayMode === "serial" ? "Serial log" : "VGA display";
 }
 
 function bootLabel(vm) {
-  if (vm.bootType === "packaged-demo") return "Packaged Alpine image";
-  if (vm.bootType === "kernel") return "Linux kernel + disk";
+  if (vm.bootType === "kernel") return "Linux bzImage";
   if (vm.bootType === "iso") return "Boot ISO image";
-  return "Disk image";
+  if (vm.bootType === "floppy") return "Floppy image";
+  return "Raw disk image";
 }
 
 function requiredFileKeys(vm) {
-  if (vm.bootType === "packaged-demo") return [];
-  if (vm.bootType === "kernel") return ["kernel", "disk"];
+  if (vm.bootType === "kernel") return ["kernel"];
   if (vm.bootType === "iso") return ["cdrom"];
+  if (vm.bootType === "floppy") return ["floppy"];
   return ["disk"];
 }
 
@@ -582,7 +573,9 @@ function fileTitle(key) {
     kernel: "Kernel",
     initrd: "Initial Ramdisk",
     disk: "Disk Image",
-    cdrom: "CD/DVD Image"
+    cdrom: "CD/DVD Image",
+    floppy: "Floppy Image",
+    state: "Save State"
   }[key] || key;
 }
 
@@ -610,16 +603,17 @@ function newWizard() {
   return {
     history: [],
     page: "start",
-    runtime: "local-qemu-wasm",
+    runtime: "local-v86",
     machineIndex: 0,
-    architecture: "x86_64",
-    target: "q35",
-    memory: 512,
+    architecture: "x86",
+    target: "pc",
+    memory: 256,
     cpu: 1,
+    vgaMemory: 8,
     storage: 2,
-    displayMode: "serial",
+    displayMode: "graphical",
     bootType: "iso",
-    bootArguments: "console=ttyS0 root=/dev/vda rw",
+    bootArguments: "",
     name: "",
     fileRefs: {}
   };
@@ -664,7 +658,7 @@ function wizardStart() {
       <div class="group">
         <button class="choice-row" onclick="wizardContinue()">
           ${iconMarkup(assets.linux)}
-          <span class="choice-copy"><strong>Linux</strong><span>QEMU-WASM system emulation in the browser.</span></span>
+          <span class="choice-copy"><strong>Linux</strong><span>v86 x86 system emulation in the browser.</span></span>
           <span class="checkmark">&#10003;</span>
         </button>
       </div>
@@ -672,9 +666,9 @@ function wizardStart() {
     <section class="section">
       <p class="section-title">Runtime</p>
       <div class="group">
-        ${row("Engine", "QEMU-WASM")}
-        ${row("Display", "Serial console")}
-        ${row("Acceleration", "TCG")}
+        ${row("Engine", "v86")}
+        ${row("Display", "VGA + serial log")}
+        ${row("Acceleration", "WebAssembly JIT")}
         ${row("Network", "Off")}
       </div>
     </section>
@@ -685,7 +679,7 @@ function wizardBoot() {
   return `
     <section class="section">
       <div class="group">
-        ${selectRow("Boot Type", state.wizard.bootType, ["iso", "kernel", "disk"], "setWizardValue('bootType', this.value)")}
+        ${selectRow("Boot Type", state.wizard.bootType, ["iso", "disk", "floppy", "kernel"], "setWizardValue('bootType', this.value)")}
       </div>
     </section>
     ${state.wizard.bootType === "iso" ? `
@@ -703,10 +697,16 @@ function wizardBoot() {
         </div>
       </section>
     ` : ""}
+    ${state.wizard.bootType === "floppy" ? `
+      <section class="section">
+        <p class="section-title">Floppy</p>
+        <div class="group">${fileRow("Floppy Image", "floppy")}</div>
+      </section>
+    ` : ""}
     <section class="section">
       <p class="section-title">${state.wizard.bootType === "iso" ? "Writable Disk" : "Storage"}</p>
       <div class="group">${fileRow("Disk Image", "disk")}</div>
-      ${state.wizard.bootType === "iso" ? `<p class="section-footer">Optional, but needed if you want the guest to install or save changes to a disk image.</p>` : ""}
+      ${state.wizard.bootType !== "disk" ? `<p class="section-footer">Optional, but needed if you want the guest to install or persist data on a disk image.</p>` : ""}
     </section>
     <section class="section">
       <p class="section-title">Boot Arguments</p>
@@ -728,7 +728,7 @@ function wizardHardware() {
       <div class="group">
         ${selectRow("Mode", state.wizard.displayMode, ["serial", "graphical"], "setWizardValue('displayMode', this.value)")}
       </div>
-      ${state.wizard.displayMode === "graphical" ? `<p class="section-footer">Graphical mode uses the browser canvas and pointer input. The included upstream x86_64 build is serial-first, so custom graphical guests need a canvas-enabled QEMU-WASM build.</p>` : ""}
+      ${state.wizard.displayMode === "graphical" ? `<p class="section-footer">Graphical mode is v86's VGA canvas with mouse, touch, and keyboard routed to the emulated PC.</p>` : ""}
     </section>
     <section class="section">
       <p class="section-title">Memory</p>
@@ -755,6 +755,18 @@ function wizardHardware() {
         </div>
       </div>
     </section>
+    <section class="section">
+      <p class="section-title">Video Memory</p>
+      <div class="group">
+        <div class="row">
+          <span class="row-title">VGA RAM</span>
+          <span class="range-row">
+            <input type="range" min="1" max="32" step="1" value="${state.wizard.vgaMemory}" oninput="setWizardSilent('vgaMemory', Number(this.value)); this.nextElementSibling.value = this.value">
+            <input type="number" value="${state.wizard.vgaMemory}" oninput="setWizardSilent('vgaMemory', Number(this.value))">
+          </span>
+        </div>
+      </div>
+    </section>
   `;
 }
 
@@ -777,7 +789,7 @@ function wizardStorage() {
 function wizardSummary() {
   const name = state.wizard.name || defaultName();
   const preview = wizardToVM("preview");
-  const plan = buildQemuPlan(preview);
+  const config = formatV86Config(preview);
   return `
     <section class="section">
       <p class="section-title">Information</p>
@@ -786,11 +798,12 @@ function wizardSummary() {
     <section class="section">
       <p class="section-title">System</p>
       <div class="group">
-        ${row("Engine", "QEMU-WASM")}
+        ${row("Engine", "v86")}
         ${row("Architecture", preview.architecture)}
         ${row("Machine", preview.machine)}
         ${row("Display", displayLabel(preview))}
         ${row("RAM", `${preview.memory} MiB`)}
+        ${row("VGA RAM", `${preview.vgaMemory || 8} MiB`)}
         ${row("CPU", `${preview.cpu} Core${preview.cpu === 1 ? "" : "s"}`)}
         ${row("Storage", `${preview.storage} GiB`)}
       </div>
@@ -803,8 +816,8 @@ function wizardSummary() {
       </div>
     </section>
     <section class="section">
-      <p class="section-title">QEMU</p>
-      ${codeBlock(`${plan.executable} ${shellQuoteArgs(plan.args)}`)}
+      <p class="section-title">v86</p>
+      ${codeBlock(config)}
     </section>
   `;
 }
@@ -887,18 +900,18 @@ function wizardToVM(id) {
     os: "Linux",
     status: "Stopped",
     icon: assets.linux,
-    notes: "Local browser VM config generated from UTM-Web. Import boot media into browser storage, then run it with the vendored QEMU-WASM engine.",
+    notes: "Local browser VM config generated from UTM-Web. Import boot media into browser storage, then run it with the vendored v86 engine.",
     runtime: w.runtime,
     architecture: w.architecture,
     machine: w.target,
     memory: w.memory,
     cpu: w.cpu,
     storage: w.storage,
+    vgaMemory: w.vgaMemory,
     displayMode: w.displayMode,
     bootType: w.bootType,
     bootArguments: w.bootArguments,
     fileRefs: structuredClone(w.fileRefs),
-    qemuArgs: [],
     network: "none"
   };
 }
@@ -942,7 +955,7 @@ function renderSettingsRoot() {
         ${navRow("System", "sf:cpu", "icon-orange", "openSettingsPane('System')")}
         ${navRow("Display", "sf:rectangle.on.rectangle", "icon-blue", "openSettingsPane('Display')")}
         ${navRow("Boot", "sf:externaldrive", "icon-yellow", "openSettingsPane('Boot')")}
-        ${navRow("QEMU", "sf:shippingbox", "icon-purple", "openSettingsPane('QEMU')")}
+        ${navRow("v86", "sf:shippingbox", "icon-purple", "openSettingsPane('v86')")}
       </div>
     </section>
     <section class="section">
@@ -989,8 +1002,8 @@ function settingsPaneContent(pane) {
       <section class="section">
         <p class="section-title">Hardware</p>
         <div class="group">
-          ${selectRow("Architecture", vm.architecture, ["x86_64", "i386"], "setDraft('architecture', this.value)")}
-          ${selectRow("Machine", vm.machine, ["q35", "pc"], "setDraft('machine', this.value)")}
+          ${selectRow("Architecture", vm.architecture, ["x86"], "setDraft('architecture', this.value)")}
+          ${selectRow("Machine", vm.machine, ["pc"], "setDraft('machine', this.value)")}
         </div>
       </section>
       <section class="section">
@@ -1018,7 +1031,7 @@ function settingsPaneContent(pane) {
         <div class="group">
           ${selectRow("Mode", vm.displayMode || "serial", ["serial", "graphical"], "setDraft('displayMode', this.value); render()")}
         </div>
-        ${vm.displayMode === "graphical" ? `<p class="section-footer">Graphical mode removes -nographic and attaches the browser canvas as the QEMU display. The bundled x86_64 QEMU-WASM target is serial-first; use a canvas-enabled build for graphical guests.</p>` : ""}
+        ${vm.displayMode === "graphical" ? `<p class="section-footer">Graphical mode uses v86's browser screen adapter. Tap the display to focus keyboard and pointer input.</p>` : ""}
       </section>
       <section class="section">
         <p class="section-title">Input</p>
@@ -1027,19 +1040,25 @@ function settingsPaneContent(pane) {
           ${row("Touch", "Touchpad emulation")}
         </div>
       </section>
+      <section class="section">
+        <p class="section-title">Video Memory</p>
+        <div class="group">
+          <div class="row">
+            <span class="row-title">VGA RAM</span>
+            <span class="range-row">
+              <input type="range" min="1" max="32" step="1" value="${vm.vgaMemory || 8}" oninput="setDraft('vgaMemory', Number(this.value)); this.nextElementSibling.value = this.value">
+              <input type="number" value="${vm.vgaMemory || 8}" oninput="setDraft('vgaMemory', Number(this.value))">
+            </span>
+          </div>
+        </div>
+      </section>
     `;
   }
   if (pane === "Boot") {
     return `
       <section class="section">
-        <div class="group">${selectRow("Boot Type", vm.bootType, ["packaged-demo", "iso", "kernel", "disk"], "setDraft('bootType', this.value); render()")}</div>
+        <div class="group">${selectRow("Boot Type", vm.bootType, ["iso", "disk", "floppy", "kernel"], "setDraft('bootType', this.value); render()")}</div>
       </section>
-      ${vm.bootType === "packaged-demo" ? `
-        <section class="section">
-          <p class="section-title">Packaged Demo</p>
-          <div class="group">${row("Image", "Local Alpine x86_64 from qemu-wasm-demo submodule")}</div>
-        </section>
-      ` : `
         ${vm.bootType === "iso" ? `
           <section class="section">
             <p class="section-title">CD/DVD</p>
@@ -1055,32 +1074,40 @@ function settingsPaneContent(pane) {
             </div>
           </section>
         ` : ""}
+        ${vm.bootType === "floppy" ? `
+          <section class="section">
+            <p class="section-title">Floppy</p>
+            <div class="group">${fileRow("Floppy Image", "floppy", "draft")}</div>
+          </section>
+        ` : ""}
         <section class="section">
           <p class="section-title">${vm.bootType === "iso" ? "Writable Disk" : "Disk"}</p>
           <div class="group">${fileRow("Disk Image", "disk", "draft")}</div>
           ${vm.bootType === "iso" ? `<p class="section-footer">Optional, but needed if you want the guest to install or save changes to a disk image.</p>` : ""}
         </section>
-      `}
       <section class="section">
         <p class="section-title">Boot Arguments</p>
         <div class="group">${textInputRow("Append", vm.bootArguments, "setDraft('bootArguments', this.value)")}</div>
       </section>
     `;
   }
-  if (pane === "QEMU") {
-    const plan = buildQemuPlan(vm);
+  if (pane === "v86") {
+    const config = formatV86Config(vm);
     return `
       <section class="section">
-        <p class="section-title">Generated Arguments</p>
-        ${codeBlock(`${plan.executable} ${shellQuoteArgs(plan.args)}`)}
+        <p class="section-title">Generated Config</p>
+        ${codeBlock(config)}
       </section>
       <section class="section">
-        <p class="section-title">Additional Arguments</p>
-        <div class="group">${textInputRow("Arguments", vm.qemuArgs?.join(" ") || "", "setDraftArgs(this.value)")}</div>
+        <p class="section-title">Save State</p>
+        <div class="group">
+          ${vm.fileRefs?.state ? row("State", `${vm.fileRefs.state.name} · ${formatBytes(vm.fileRefs.state.size)}`) : row("State", "None saved")}
+          ${fileRow("Restore State", "state", "draft")}
+        </div>
       </section>
       <section class="section">
         <div class="group">
-          ${navRow("Copy Arguments", "sf:doc.on.clipboard", "icon-blue", `copyDraftQemuArgs()`)}
+          ${navRow("Copy Config", "sf:doc.on.clipboard", "icon-blue", `copyDraftV86Config()`)}
           ${navRow("Export Config", "sf:square.and.arrow.down", "icon-green", `exportDraftConfig()`)}
         </div>
       </section>
@@ -1091,10 +1118,6 @@ function settingsPaneContent(pane) {
 
 function setDraft(key, value) {
   state.draft[key] = value;
-}
-
-function setDraftArgs(value) {
-  state.draft.qemuArgs = splitArgs(value);
 }
 
 async function pickDraftFile(key, input) {
@@ -1111,7 +1134,7 @@ function saveSettings() {
   if (index !== -1) {
     state.vms[index] = structuredClone(state.draft);
     state.selectedId = state.draft.id;
-    state.vms[index].status = state.vms[index].bootType === "packaged-demo" ? "Ready" : "Stopped";
+    state.vms[index].status = "Stopped";
   }
   state.draft = null;
   saveState();
@@ -1132,77 +1155,42 @@ function deleteDraftVM() {
   setRoute({ name: "library" });
 }
 
-function buildQemuPlan(vm) {
-  if (vm.bootType === "packaged-demo") {
-    return {
-      executable: "qemu-system-x86_64",
-      args: [
-        ...displayArgs(vm),
-        "-M", "pc", "-m", "512M", "-accel", "tcg,tb-size=500",
-        "-L", "/pack-rom/",
-        "-nic", "none",
-        "-kernel", "/pack-kernel/vmlinuz-virt",
-        "-initrd", "/pack-initramfs/initramfs-virt",
-        "-append", vm.bootArguments || "console=ttyS0 root=/dev/vda noautodetect hostname=demo",
-        "-drive", "id=test,file=/pack-rootfs/disk-rootfs.img,format=raw,if=none",
-        "-device", "virtio-blk-pci,drive=test"
-      ]
-    };
-  }
-  const args = [
-    ...displayArgs(vm),
-    "-M", vm.machine || "q35",
-    "-m", `${vm.memory || 512}M`,
-    "-accel", "tcg,tb-size=500",
-    "-smp", String(Math.max(1, Number(vm.cpu || 1))),
-    "-L", "/pack-rom/",
-    "-nic", "none"
-  ];
-  if (vm.bootType === "kernel" && vm.fileRefs?.kernel) {
-    args.push("-kernel", "/utm/kernel");
-  }
-  if (vm.bootType === "kernel" && vm.fileRefs?.initrd) {
-    args.push("-initrd", "/utm/initrd");
-  }
+function v86BootOrder(vm) {
+  if (vm.bootType === "disk") return v86Runtime.bootOrders.disk;
+  if (vm.bootType === "floppy") return v86Runtime.bootOrders.floppy;
+  return v86Runtime.bootOrders.cdrom;
+}
+
+function v86ConfigPreview(vm) {
+  const config = {
+    wasm_path: v86Runtime.wasm,
+    bios: v86Runtime.bios,
+    vga_bios: v86Runtime.vgaBios,
+    memory_size: `${vm.memory || 256} MiB`,
+    vga_memory_size: `${vm.vgaMemory || 8} MiB`,
+    boot_order: `0x${v86BootOrder(vm).toString(16)}`,
+    autostart: true,
+    disable_speaker: true,
+    network: "disabled"
+  };
+  if (vm.bootType === "iso") config.cdrom = vm.fileRefs?.cdrom?.name || "choose an ISO";
+  if (vm.bootType === "disk" || vm.fileRefs?.disk) config.hda = vm.fileRefs?.disk?.name || "choose a raw disk";
+  if (vm.bootType === "floppy") config.fda = vm.fileRefs?.floppy?.name || "choose a floppy image";
   if (vm.bootType === "kernel") {
-    args.push("-append", vm.bootArguments || "console=ttyS0 root=/dev/vda rw");
+    config.bzimage = vm.fileRefs?.kernel?.name || "choose a bzImage";
+    if (vm.fileRefs?.initrd) config.initrd = vm.fileRefs.initrd.name;
+    if (vm.bootArguments) config.cmdline = vm.bootArguments;
   }
-  if (vm.bootType === "iso" && vm.fileRefs?.cdrom) {
-    args.push("-cdrom", "/utm/cdrom.iso");
-    args.push("-boot", "d");
-  }
-  if (vm.fileRefs?.disk) {
-    args.push("-drive", `id=utm0,file=/utm/disk.img,format=${diskFormat(vm.fileRefs.disk)},if=none`);
-    args.push("-device", "virtio-blk-pci,drive=utm0");
-  }
-  if (Array.isArray(vm.qemuArgs) && vm.qemuArgs.length) {
-    args.push(...vm.qemuArgs);
-  }
-  return { executable: "qemu-system-x86_64", args };
+  if (vm.fileRefs?.state) config.initial_state = vm.fileRefs.state.name;
+  return config;
 }
 
-function displayArgs(vm) {
-  if (vm.displayMode === "graphical") {
-    return ["-display", "sdl,gl=off", "-serial", "mon:stdio", "-device", "usb-tablet"];
-  }
-  return ["-nographic"];
+function formatV86Config(vm) {
+  return JSON.stringify(v86ConfigPreview(vm), null, 2);
 }
 
-function shellQuoteArgs(args) {
-  return args.map(arg => {
-    if (/^[A-Za-z0-9_./:=,+-]+$/.test(arg)) return arg;
-    return `'${arg.replaceAll("'", "'\\''")}'`;
-  }).join(" ");
-}
-
-function splitArgs(value) {
-  const matches = String(value || "").match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-  return matches.map(part => {
-    if ((part.startsWith('"') && part.endsWith('"')) || (part.startsWith("'") && part.endsWith("'"))) {
-      return part.slice(1, -1);
-    }
-    return part;
-  });
+function buildV86Plan(vm) {
+  return { executable: "v86", args: [formatV86Config(vm)] };
 }
 
 async function startRuntime(id) {
@@ -1211,7 +1199,8 @@ async function startRuntime(id) {
   if (!session || session.vmId !== id) return;
   appendOutput(`UTM Web ${vm.name}`);
   appendOutput(`Runtime: ${runtimeLabel(vm)}`);
-  appendOutput(`Command: ${buildQemuPlan(vm).executable} ${shellQuoteArgs(buildQemuPlan(vm).args)}`);
+  appendOutput("Engine: v86");
+  appendOutput(formatV86Config(vm));
   appendOutput("");
   if (!("WebAssembly" in window)) {
     failRuntime(vm, "WebAssembly is not available in this browser.");
@@ -1226,18 +1215,18 @@ async function startRuntime(id) {
     failRuntime(vm, `Missing ${missingFiles.map(fileTitle).join(", ")}.`);
     return;
   }
-  const localRuntime = await resourceExists(qemuWasm.module);
+  const localRuntime = await resourceExists(v86Runtime.module);
   if (!localRuntime) {
-    failRuntime(vm, `Local QEMU-WASM runtime not found at ${qemuWasm.module}.`);
+    failRuntime(vm, `Local v86 runtime not found at ${v86Runtime.module}.`);
     return;
   }
   try {
     session.status = "running";
     vm.status = "Running";
     saveState();
-    appendOutput("Local QEMU-WASM runtime found in repo submodule.");
-    appendOutput("Preparing QEMU filesystem...");
-    await startLocalQemu(vm);
+    appendOutput("Local v86 runtime found in repo.");
+    appendOutput("Preparing v86 machine...");
+    await startLocalV86(vm);
   } catch (error) {
     failRuntime(vm, error.message || String(error));
   }
@@ -1282,7 +1271,7 @@ function failRuntime(vm, message) {
     runtimeSession.status = "stopped";
     appendOutput(`Stopped: ${message}`);
   }
-  vm.status = vm.bootType === "packaged-demo" ? "Ready" : "Stopped";
+  vm.status = "Stopped";
   saveState();
   render();
 }
@@ -1301,8 +1290,7 @@ async function resourceExists(url) {
   }
 }
 
-async function startLocalQemu(vm) {
-  const plan = buildQemuPlan(vm);
+async function startLocalV86(vm) {
   const payloads = {};
   for (const key of Object.keys(vm.fileRefs || {})) {
     const bytes = await readStoredBytes(vm.fileRefs[key], `${vm.id}:${key}`);
@@ -1315,116 +1303,50 @@ async function startLocalQemu(vm) {
   if (runtimeSession) {
     runtimeSession.diskRef = vm.fileRefs?.disk || null;
   }
-  const pty = createBrowserPty();
-  if (runtimeSession) runtimeSession.pty = pty;
-  const displayCanvas = $("qemuCanvas");
-  const previousModule = window.Module;
-  window.Module = {
-    arguments: plan.args,
-    locateFile: path => runtimeUrl(`${qemuWasm.root}${path}`),
-    mainScriptUrlOrBlob: runtimeUrl(qemuWasm.module),
-    canvas: displayCanvas || undefined,
-    pty,
-    print: appendOutput,
-    printErr: line => appendOutput(line),
-    setStatus: status => appendOutput(status),
-    preRun: [mod => {
-      try {
-        mod.FS.mkdir("/utm");
-      } catch (_) {
-        // Directory already exists when the runtime re-enters preRun.
-      }
-      if (payloads.kernel) mod.FS.writeFile("/utm/kernel", payloads.kernel);
-      if (payloads.initrd) mod.FS.writeFile("/utm/initrd", payloads.initrd);
-      if (payloads.disk) mod.FS.writeFile("/utm/disk.img", payloads.disk);
-      if (payloads.cdrom) mod.FS.writeFile("/utm/cdrom.iso", payloads.cdrom);
-    }],
-    onExit: code => appendOutput(`QEMU exited with code ${code}.`)
+  const screen = $("v86Screen");
+  if (!screen) throw new Error("v86 screen is not mounted.");
+  const { V86 } = await import(runtimeUrl(v86Runtime.module));
+  const options = {
+    wasm_path: runtimeUrl(v86Runtime.wasm),
+    memory_size: Math.max(16, Number(vm.memory || 256)) * 1024 * 1024,
+    vga_memory_size: Math.max(1, Number(vm.vgaMemory || 8)) * 1024 * 1024,
+    screen_container: screen,
+    bios: { url: runtimeUrl(v86Runtime.bios) },
+    vga_bios: { url: runtimeUrl(v86Runtime.vgaBios) },
+    boot_order: v86BootOrder(vm),
+    autostart: true,
+    disable_speaker: true,
+    disable_mouse: vm.displayMode === "serial",
+    net_device: undefined
   };
-  try {
-    appendOutput(`Worker script: ${runtimeUrl(qemuWasm.module)}`);
-    await loadClassicScript(qemuWasm.packageLoaders.rom);
-    if (vm.bootType === "packaged-demo") {
-      await loadClassicScript(qemuWasm.packageLoaders.kernel);
-      await loadClassicScript(qemuWasm.packageLoaders.initramfs);
-      await loadClassicScript(qemuWasm.packageLoaders.rootfs);
-    }
-    const module = await import(runtimeUrl(qemuWasm.module));
-    if (typeof module.default === "function") {
-      runtimeSession.module = await module.default(window.Module);
-    }
-  } catch (error) {
-    window.Module = previousModule;
-    throw error;
-  }
+  if (payloads.cdrom) options.cdrom = { buffer: uint8ToArrayBuffer(payloads.cdrom) };
+  if (payloads.disk) options.hda = { buffer: uint8ToArrayBuffer(payloads.disk) };
+  if (payloads.floppy) options.fda = { buffer: uint8ToArrayBuffer(payloads.floppy) };
+  if (payloads.kernel) options.bzimage = { buffer: uint8ToArrayBuffer(payloads.kernel) };
+  if (payloads.initrd) options.initrd = { buffer: uint8ToArrayBuffer(payloads.initrd) };
+  if (payloads.state) options.initial_state = { buffer: uint8ToArrayBuffer(payloads.state) };
+  if (vm.bootArguments) options.cmdline = vm.bootArguments;
+  const emulator = new V86(options);
+  runtimeSession.emulator = emulator;
+  runtimeSession.module = emulator;
+  emulator.add_listener("download-progress", progress => {
+    if (progress?.total) appendOutput(`Downloading ${progress.file_name || "runtime"}: ${progress.loaded}/${progress.total}`);
+  });
+  emulator.add_listener("emulator-ready", () => {
+    runtimeSession.status = "running";
+    appendOutput("v86 ready.");
+    renderDisplay();
+  });
+  emulator.add_listener("emulator-stopped", () => appendOutput("v86 stopped."));
+  emulator.add_listener("serial0-output-byte", byte => appendTerminalBytes([byte]));
 }
 
-function createBrowserPty() {
-  const input = [];
-  const readableHandlers = new Set();
-  const signalHandlers = new Set();
-  let termios = {
-    iflag: 0,
-    oflag: 0,
-    cflag: 0,
-    lflag: 0,
-    cc: new Array(32).fill(0)
-  };
-  const notifyReadable = () => {
-    for (const handler of readableHandlers) handler();
-  };
-  return {
-    get readable() {
-      return input.length > 0;
-    },
-    get writable() {
-      return true;
-    },
-    read(length) {
-      return input.splice(0, length);
-    },
-    write(bytes) {
-      appendTerminalBytes(bytes);
-    },
-    push(text) {
-      input.push(...terminalEncoder.encode(text));
-      notifyReadable();
-    },
-    signal(name) {
-      for (const handler of signalHandlers) handler(name);
-    },
-    onReadable(handler) {
-      readableHandlers.add(handler);
-      return { dispose: () => readableHandlers.delete(handler) };
-    },
-    onSignal(handler) {
-      signalHandlers.add(handler);
-      return { dispose: () => signalHandlers.delete(handler) };
-    },
-    ioctl(request, value) {
-      if (request === "TCGETS") return termios;
-      if (request === "TCSETS") {
-        termios = { ...termios, ...value };
-        return 0;
-      }
-      if (request === "TIOCGWINSZ") return [120, 40];
-      return 0;
-    }
-  };
+function uint8ToArrayBuffer(bytes) {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
 function runtimeUrl(path) {
   return new URL(path, window.location.href).href;
-}
-
-function loadClassicScript(src) {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = runtimeUrl(src);
-    script.onload = resolve;
-    script.onerror = () => reject(new Error(`Could not load ${src}.`));
-    document.body.appendChild(script);
-  });
 }
 
 function renderDisplay() {
@@ -1435,62 +1357,35 @@ function renderDisplay() {
     diskRef: null
   };
   $("view").className = "view display-view";
-  const plan = buildQemuPlan(vm);
+  const plan = buildV86Plan(vm);
   const mode = vm.displayMode === "graphical" ? "graphical" : "serial";
   $("view").innerHTML = `
     <div class="display-surface ${mode}">
-      <canvas id="qemuCanvas" class="qemu-canvas" width="1024" height="768" tabindex="0" aria-label="QEMU display"></canvas>
+      <div id="v86Screen" class="v86-screen" tabindex="0" aria-label="v86 display">
+        <canvas></canvas>
+        <div></div>
+      </div>
       <pre id="terminalOutput" class="terminal-output" tabindex="0">${escapeHtml(session.output.join("\n"))}</pre>
       <div class="floating-toolbar">
         <button onclick="saveActiveDisk()">SAVE</button>
         <button onclick="restartDisplay()">RST</button>
-        <button onclick="copyQemuArgs('${vm.id}')">ARG</button>
+        <button onclick="copyV86Config('${vm.id}')">CFG</button>
         <button onclick="stopDisplay()">X</button>
       </div>
       <div class="runtime-chip">${escapeHtml(session.status)} · ${escapeHtml(plan.executable)}</div>
     </div>
   `;
-  setupDisplayInput($("qemuCanvas"));
+  setupV86Input($("v86Screen"));
   setupConsoleInput($("terminalOutput"));
   const output = $("terminalOutput");
   if (output) output.scrollTop = output.scrollHeight;
 }
 
-function setupDisplayInput(canvas) {
-  if (!canvas) return;
-  const resizeCanvas = () => {
-    const rect = canvas.getBoundingClientRect();
-    const scale = Math.max(1, window.devicePixelRatio || 1);
-    const width = Math.max(640, Math.round(rect.width * scale));
-    const height = Math.max(480, Math.round(rect.height * scale));
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
-    }
-  };
-  resizeCanvas();
-  window.addEventListener("resize", resizeCanvas, { passive: true });
-  canvas.addEventListener("contextmenu", event => event.preventDefault());
-  canvas.addEventListener("pointerdown", event => {
-    canvas.focus();
-    canvas.setPointerCapture?.(event.pointerId);
-    if (event.pointerType === "touch") mirrorTouchPointer(canvas, event, "mousedown");
-  });
-  canvas.addEventListener("pointermove", event => {
-    if (event.pointerType === "touch") mirrorTouchPointer(canvas, event, "mousemove");
-  });
-  canvas.addEventListener("pointerup", event => {
-    if (event.pointerType === "touch") mirrorTouchPointer(canvas, event, "mouseup");
-    releaseCanvasPointer(canvas, event.pointerId);
-  });
-  canvas.addEventListener("pointercancel", event => {
-    if (event.pointerType === "touch") mirrorTouchPointer(canvas, event, "mouseup");
-    releaseCanvasPointer(canvas, event.pointerId);
-  });
-  canvas.addEventListener("touchstart", event => event.preventDefault(), { passive: false });
-  canvas.addEventListener("touchmove", event => event.preventDefault(), { passive: false });
-  canvas.addEventListener("wheel", () => canvas.focus(), { passive: true });
-  canvas.addEventListener("keydown", sendConsoleKey);
+function setupV86Input(screen) {
+  if (!screen) return;
+  screen.addEventListener("pointerdown", () => screen.focus());
+  screen.addEventListener("touchstart", event => event.preventDefault(), { passive: false });
+  screen.addEventListener("touchmove", event => event.preventDefault(), { passive: false });
 }
 
 function setupConsoleInput(element) {
@@ -1500,11 +1395,10 @@ function setupConsoleInput(element) {
 }
 
 function sendConsoleKey(event) {
-  const pty = runtimeSession?.pty;
-  if (!pty) return;
+  const emulator = runtimeSession?.emulator;
+  if (!emulator) return;
   let text = "";
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
-    pty.signal("SIGINT");
     text = "\x03";
   } else if (event.key === "Enter") {
     text = "\r";
@@ -1527,42 +1421,29 @@ function sendConsoleKey(event) {
   }
   if (!text) return;
   event.preventDefault();
-  pty.push(text);
+  emulator.serial0_send(text);
 }
 
-function releaseCanvasPointer(canvas, pointerId) {
-  try {
-    canvas.releasePointerCapture?.(pointerId);
-  } catch (_) {
-    // Some browsers report cancelled touch pointers as already released.
-  }
-}
-
-function mirrorTouchPointer(canvas, event, type) {
-  event.preventDefault();
-  canvas.dispatchEvent(new MouseEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    clientX: event.clientX,
-    clientY: event.clientY,
-    screenX: event.screenX,
-    screenY: event.screenY,
-    button: 0,
-    buttons: type === "mouseup" ? 0 : 1
-  }));
-}
-
-function stopDisplay() {
+async function stopDisplay() {
   const vm = vmById(state.route.id);
-  vm.status = vm.bootType === "packaged-demo" ? "Ready" : "Stopped";
+  const session = runtimeSession;
+  if (session?.emulator) {
+    try {
+      await session.emulator.stop();
+      await session.emulator.destroy();
+    } catch (error) {
+      console.warn(error);
+    }
+  }
+  vm.status = "Stopped";
   runtimeSession = null;
   saveState();
   setRoute({ name: "detail", id: vm.id });
 }
 
-function restartDisplay() {
+async function restartDisplay() {
   const id = state.route.id;
-  stopDisplay();
+  await stopDisplay();
   runVM(id);
 }
 
@@ -1571,44 +1452,34 @@ function openURL(url) {
 }
 
 async function saveActiveDisk() {
-  if (!runtimeSession?.module) {
-    appendOutput("Save skipped: QEMU module is not ready yet.");
-    return;
-  }
-  if (!runtimeSession.diskRef) {
-    appendOutput("Save skipped: this VM has no writable disk image attached.");
-    return;
-  }
-  const fs = runtimeSession.module.FS || window.Module?.FS;
-  if (!fs) {
-    appendOutput("Save skipped: QEMU filesystem is unavailable.");
+  if (!runtimeSession?.emulator) {
+    appendOutput("Save skipped: v86 is not ready yet.");
     return;
   }
   try {
-    const bytes = fs.readFile(runtimeSession.diskPath);
-    const updated = await updateStoredBytes(runtimeSession.diskRef, bytes);
+    const bytes = await runtimeSession.emulator.save_state();
     const vm = vmById(runtimeSession.vmId);
-    vm.fileRefs.disk = updated;
-    runtimeSession.diskRef = updated;
+    const safeName = vm.name.replace(/[^A-Za-z0-9._-]+/g, "-") || "utm-web";
+    const updated = await putBytesToStore(`${safeName}.v86state.bin`, "state", bytes);
+    vm.fileRefs = vm.fileRefs || {};
+    vm.fileRefs.state = updated;
     vm.status = "Saved";
     saveState();
-    appendOutput(`Saved ${updated.name} (${formatBytes(updated.size)}) to browser storage.`);
+    appendOutput(`Saved v86 state (${formatBytes(updated.size)}) to browser storage.`);
   } catch (error) {
     appendOutput(`Save failed: ${error.message || error}`);
   }
 }
 
-async function copyQemuArgs(id = state.selectedId) {
+async function copyV86Config(id = state.selectedId) {
   const vm = vmById(id);
-  const plan = buildQemuPlan(vm);
-  await navigator.clipboard.writeText(`${plan.executable} ${shellQuoteArgs(plan.args)}`);
-  showToast("QEMU arguments copied");
+  await navigator.clipboard.writeText(formatV86Config(vm));
+  showToast("v86 config copied");
 }
 
-async function copyDraftQemuArgs() {
-  const plan = buildQemuPlan(state.draft);
-  await navigator.clipboard.writeText(`${plan.executable} ${shellQuoteArgs(plan.args)}`);
-  showToast("QEMU arguments copied");
+async function copyDraftV86Config() {
+  await navigator.clipboard.writeText(formatV86Config(state.draft));
+  showToast("v86 config copied");
 }
 
 function exportConfig(id = state.selectedId) {
@@ -1624,7 +1495,7 @@ function downloadConfig(vm) {
     format: "utm-web",
     version: 1,
     vm,
-    qemu: buildQemuPlan(vm)
+    v86: v86ConfigPreview(vm)
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -1670,12 +1541,12 @@ function showToast(message) {
 
 function showRuntimeSheet() {
   state.actionSheet = {
-    title: "QEMU-WASM Runtime",
+    title: "v86 Runtime",
     actions: [
-      ["Open Upstream Repository", `openURL('${qemuWasm.upstream}'); hideSheet()`],
+      ["Open Upstream Repository", `openURL('${v86Runtime.upstream}'); hideSheet()`],
       ["Enable Isolation Headers", "enableIsolation()"],
       ["Disable Isolation Headers", "disableIsolation()"],
-      ["Open Local Runtime Notes", `openURL('${qemuWasm.docs}'); hideSheet()`]
+      ["Open Local Runtime Notes", `openURL('${v86Runtime.docs}'); hideSheet()`]
     ]
   };
   renderActionSheet();
@@ -1702,7 +1573,7 @@ async function importConfig(input) {
     const parsed = JSON.parse(text);
     const vm = parsed.vm || parsed;
     vm.id = `vm-${Date.now()}`;
-    vm.status = vm.bootType === "packaged-demo" ? "Ready" : "Stopped";
+    vm.status = "Stopped";
     state.vms.push(vm);
     state.selectedId = vm.id;
     saveState();

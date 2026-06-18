@@ -4,5 +4,7 @@ Thumbs.db
 node_modules/
 dist/
 build/
+!vendor/v86/build/
+!vendor/v86/build/*
 .env
 .env.*
