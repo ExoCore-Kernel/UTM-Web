@@ -468,6 +468,15 @@ function runVM(id = state.selectedId) {
     mode: vm.runtime,
     displayMode: vm.displayMode || "serial",
     output: [],
+    debug: [],
+    debugVisible: false,
+    inputCount: 0,
+    serialBytes: 0,
+    screenSize: "pending",
+    mouseEnabled: "unknown",
+    bootPromptDetected: false,
+    autoBootEnter: false,
+    autoBootSent: false,
     module: null,
     diskPath: "/utm/disk.img",
     diskRef: null,
@@ -1243,8 +1252,40 @@ function appendOutput(line) {
   }
 }
 
+function debugLog(message) {
+  if (!runtimeSession) return;
+  const stamp = new Date().toLocaleTimeString([], { hour12: false });
+  runtimeSession.debug.push(`${stamp} ${message}`);
+  if (runtimeSession.debug.length > 250) {
+    runtimeSession.debug.splice(0, runtimeSession.debug.length - 250);
+  }
+  updateDebugPanel();
+}
+
+function updateDebugPanel() {
+  const debug = $("debugOutput");
+  if (!debug || !runtimeSession) return;
+  debug.textContent = runtimeSession.debug.join("\n");
+  debug.scrollTop = debug.scrollHeight;
+  const status = $("debugStatus");
+  if (status) status.textContent = debugStatusText(runtimeSession);
+}
+
+function debugStatusText(session) {
+  return [
+    `status=${session.status}`,
+    `screen=${session.screenSize || "pending"}`,
+    `mouse=${session.mouseEnabled}`,
+    `serialBytes=${session.serialBytes || 0}`,
+    `inputs=${session.inputCount || 0}`,
+    `bootPrompt=${session.bootPromptDetected ? "yes" : "no"}`,
+    `auto=${session.autoBootEnter ? "on" : "off"}`
+  ].join("  ");
+}
+
 function appendTerminalBytes(bytes) {
   if (!runtimeSession) return;
+  runtimeSession.serialBytes = (runtimeSession.serialBytes || 0) + bytes.length;
   const text = terminalDecoder.decode(new Uint8Array(bytes));
   const cleaned = text
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
@@ -1258,6 +1299,21 @@ function appendTerminalBytes(bytes) {
   if (output) {
     output.textContent = runtimeSession.output.join("\n");
     output.scrollTop = output.scrollHeight;
+  }
+  detectBootPrompt();
+}
+
+function detectBootPrompt() {
+  if (!runtimeSession) return;
+  const tail = runtimeSession.output.slice(-8).join("\n");
+  if (!runtimeSession.bootPromptDetected && /(?:^|\n)boot:\s*$/i.test(tail)) {
+    runtimeSession.bootPromptDetected = true;
+    debugLog("detected ISOLINUX boot prompt");
+  }
+  if (runtimeSession.bootPromptDetected && runtimeSession.autoBootEnter && !runtimeSession.autoBootSent) {
+    runtimeSession.autoBootSent = true;
+    debugLog("auto boot enter scheduled");
+    setTimeout(() => sendSerialText("\r"), 250);
   }
 }
 
@@ -1329,16 +1385,36 @@ async function startLocalV86(vm) {
   const emulator = new V86(options);
   runtimeSession.emulator = emulator;
   runtimeSession.module = emulator;
+  debugLog(`v86 constructor ok; boot=${vm.bootType}; memory=${vm.memory}MiB; vga=${vm.vgaMemory || 8}MiB`);
   emulator.add_listener("download-progress", progress => {
-    if (progress?.total) appendOutput(`Downloading ${progress.file_name || "runtime"}: ${progress.loaded}/${progress.total}`);
+    if (progress?.total) {
+      appendOutput(`Downloading ${progress.file_name || "runtime"}: ${progress.loaded}/${progress.total}`);
+      debugLog(`download ${progress.file_name || "runtime"} ${progress.loaded}/${progress.total}`);
+    }
   });
   emulator.add_listener("emulator-ready", () => {
     runtimeSession.status = "running";
     appendOutput("v86 ready.");
+    debugLog("event emulator-ready");
     renderDisplay();
   });
-  emulator.add_listener("emulator-stopped", () => appendOutput("v86 stopped."));
-  emulator.add_listener("serial0-output-byte", byte => appendTerminalBytes([byte]));
+  emulator.add_listener("emulator-stopped", () => {
+    debugLog("event emulator-stopped");
+    appendOutput("v86 stopped.");
+  });
+  emulator.add_listener("screen-set-size", size => {
+    const [width, height, bpp] = size || [];
+    runtimeSession.screenSize = `${width || 0}x${height || 0}x${bpp || 0}`;
+    debugLog(`event screen-set-size ${runtimeSession.screenSize}`);
+  });
+  emulator.add_listener("mouse-enable", enabled => {
+    runtimeSession.mouseEnabled = enabled ? "on" : "off";
+    debugLog(`event mouse-enable ${runtimeSession.mouseEnabled}`);
+  });
+  emulator.add_listener("serial0-output-byte", byte => {
+    appendTerminalBytes([byte]);
+    if ((runtimeSession.serialBytes || 0) % 256 === 0) updateDebugPanel();
+  });
 }
 
 function uint8ToArrayBuffer(bytes) {
@@ -1373,17 +1449,82 @@ function renderDisplay() {
       <div class="floating-toolbar">
         <button onclick="saveActiveDisk()">SAVE</button>
         <button onclick="sendSerialText('\r')">ENT</button>
+        <button onclick="toggleDebugPanel()">DBG</button>
         <button onclick="restartDisplay()">RST</button>
         <button onclick="copyV86Config('${vm.id}')">CFG</button>
         <button onclick="stopDisplay()">X</button>
       </div>
       <div class="runtime-chip">${escapeHtml(session.status)} · ${escapeHtml(plan.executable)}</div>
+      ${session.debugVisible ? renderDebugPanel(session) : ""}
     </div>
   `;
   setupV86Input($("v86Screen"));
   setupConsoleInput($("terminalOutput"));
   const output = $("terminalOutput");
   if (output) output.scrollTop = output.scrollHeight;
+  updateDebugPanel();
+}
+
+function renderDebugPanel(session) {
+  return `
+    <section class="debug-panel">
+      <div class="debug-head">
+        <strong>v86 Debug</strong>
+        <button onclick="toggleDebugPanel()">Close</button>
+      </div>
+      <p id="debugStatus" class="debug-status">${escapeHtml(debugStatusText(session))}</p>
+      <div class="debug-actions">
+        <button onclick="sendKeyboardEnter()">Key Enter</button>
+        <button onclick="sendScancodeEnter()">Scan Enter</button>
+        <button onclick="sendSerialOnly('\r')">Serial Enter</button>
+        <button onclick="sendSerialText('\r')">Both Enter</button>
+        <button onclick="enableAutoBootEnter()">Auto Boot</button>
+        <button onclick="copyDebugLog()">Copy Log</button>
+        <button onclick="clearDebugLog()">Clear</button>
+      </div>
+      <form class="debug-send" onsubmit="sendDebugInput(event)">
+        <input id="debugInput" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="text or boot label">
+        <button type="submit">Send Both</button>
+      </form>
+      <pre id="debugOutput">${escapeHtml((session.debug || []).join("\n"))}</pre>
+    </section>
+  `;
+}
+
+function toggleDebugPanel() {
+  if (!runtimeSession) return;
+  runtimeSession.debugVisible = !runtimeSession.debugVisible;
+  if (runtimeSession.debugVisible) debugLog("debug panel opened");
+  renderDisplay();
+}
+
+function clearDebugLog() {
+  if (!runtimeSession) return;
+  runtimeSession.debug = [];
+  debugLog("debug log cleared");
+}
+
+async function copyDebugLog() {
+  const text = runtimeSession?.debug?.join("\n") || "";
+  await navigator.clipboard.writeText(text);
+  debugLog("debug log copied");
+}
+
+function sendDebugInput(event) {
+  event.preventDefault();
+  const input = $("debugInput");
+  const text = input?.value || "";
+  if (text) sendSerialText(text);
+  sendSerialText("\r");
+  if (input) input.value = "";
+}
+
+function enableAutoBootEnter() {
+  if (!runtimeSession) return;
+  runtimeSession.autoBootEnter = true;
+  runtimeSession.autoBootSent = false;
+  debugLog("auto boot enter enabled");
+  detectBootPrompt();
 }
 
 function setupV86Input(screen) {
@@ -1448,28 +1589,71 @@ function sendSerialText(text) {
     appendOutput("Serial input skipped: v86 is not ready yet.");
     return;
   }
+  runtimeSession.inputCount = (runtimeSession.inputCount || 0) + 1;
   emulator.serial0_send(text);
   sendKeyboardInput(emulator, text);
+  debugLog(`input both ${debugTextLabel(text)}`);
+}
+
+function sendSerialOnly(text) {
+  const emulator = runtimeSession?.emulator;
+  if (!emulator) {
+    appendOutput("Serial input skipped: v86 is not ready yet.");
+    return;
+  }
+  runtimeSession.inputCount = (runtimeSession.inputCount || 0) + 1;
+  emulator.serial0_send(text);
+  debugLog(`input serial ${debugTextLabel(text)}`);
+}
+
+function sendKeyboardEnter() {
+  const emulator = runtimeSession?.emulator;
+  if (!emulator) {
+    appendOutput("Keyboard input skipped: v86 is not ready yet.");
+    return;
+  }
+  runtimeSession.inputCount = (runtimeSession.inputCount || 0) + 1;
+  emulator.keyboard_send_keys([13]);
+  debugLog("input keyboard keyCode Enter");
+}
+
+function sendScancodeEnter() {
+  const emulator = runtimeSession?.emulator;
+  if (!emulator) {
+    appendOutput("Scancode input skipped: v86 is not ready yet.");
+    return;
+  }
+  runtimeSession.inputCount = (runtimeSession.inputCount || 0) + 1;
+  emulator.keyboard_send_scancodes([0x1C, 0x9C], 10);
+  debugLog("input keyboard scancode Enter 0x1C/0x9C");
 }
 
 function sendKeyboardInput(emulator, text) {
-  const specialKeys = {
-    "\r": 13,
-    "\n": 13,
-    "\x7f": 8,
-    "\t": 9,
-    "\x1b": 27,
-    "\x1b[A": 38,
-    "\x1b[B": 40,
-    "\x1b[C": 39,
-    "\x1b[D": 37
+  const scancodes = {
+    "\r": [0x1C, 0x9C],
+    "\n": [0x1C, 0x9C],
+    "\x7f": [0x0E, 0x8E],
+    "\t": [0x0F, 0x8F],
+    "\x1b": [0x01, 0x81],
+    "\x1b[A": [0xE0, 0x48, 0xE0, 0xC8],
+    "\x1b[B": [0xE0, 0x50, 0xE0, 0xD0],
+    "\x1b[C": [0xE0, 0x4D, 0xE0, 0xCD],
+    "\x1b[D": [0xE0, 0x4B, 0xE0, 0xCB]
   };
-  if (specialKeys[text]) {
-    emulator.keyboard_send_keys([specialKeys[text]]);
+  if (scancodes[text]) {
+    emulator.keyboard_send_scancodes(scancodes[text], 10);
     return;
   }
   const printable = text.replace(/[\r\n\t\x1b\x7f]/g, "");
   if (printable) emulator.keyboard_send_text(printable);
+}
+
+function debugTextLabel(text) {
+  return JSON.stringify(String(text)
+    .replaceAll("\r", "\\r")
+    .replaceAll("\n", "\\n")
+    .replaceAll("\x1b", "\\x1b")
+    .replaceAll("\x7f", "\\x7f"));
 }
 
 async function stopDisplay() {
@@ -1682,7 +1866,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-4", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-5", {
     updateViaCache: "none"
   });
 }
