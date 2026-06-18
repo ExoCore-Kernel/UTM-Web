@@ -725,7 +725,7 @@ textarea {
 .display-surface.graphical .terminal-output {
   top: auto;
   max-height: 31vh;
-  padding: 14px 14px 52px;
+  padding: 14px 14px 84px;
   background: rgba(5, 5, 6, .78);
   backdrop-filter: blur(14px);
 }
@@ -735,7 +735,7 @@ textarea {
   inset: 0;
   overflow: auto;
   margin: 0;
-  padding: 74px 14px 52px;
+  padding: 74px 14px 84px;
   color: #c7f7d4;
   background: #050506;
   font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
@@ -743,6 +743,37 @@ textarea {
   line-height: 1.45;
   outline: 0;
   white-space: pre-wrap;
+}
+
+.serial-input {
+  position: absolute;
+  z-index: 3;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px;
+  gap: 8px;
+}
+
+.serial-input input,
+.serial-input button {
+  height: 38px;
+  border-radius: 999px;
+  color: white;
+  background: rgba(28, 28, 30, .72);
+  backdrop-filter: blur(14px);
+  font-size: 13px;
+}
+
+.serial-input input {
+  min-width: 0;
+  padding: 0 14px;
+  font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+.serial-input button {
+  font-weight: 800;
 }
 
 .floating-toolbar {
@@ -771,7 +802,7 @@ textarea {
   position: absolute;
   z-index: 2;
   left: 14px;
-  bottom: 14px;
+  bottom: 60px;
   max-width: calc(100% - 28px);
   overflow: hidden;
   padding: 8px 11px;

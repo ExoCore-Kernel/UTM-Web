@@ -1366,8 +1366,13 @@ function renderDisplay() {
         <div></div>
       </div>
       <pre id="terminalOutput" class="terminal-output" tabindex="0">${escapeHtml(session.output.join("\n"))}</pre>
+      <form class="serial-input" onsubmit="sendSerialInput(event)">
+        <input id="serialTextInput" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="send" aria-label="Serial input">
+        <button type="submit">RET</button>
+      </form>
       <div class="floating-toolbar">
         <button onclick="saveActiveDisk()">SAVE</button>
+        <button onclick="sendSerialText('\r')">ENT</button>
         <button onclick="restartDisplay()">RST</button>
         <button onclick="copyV86Config('${vm.id}')">CFG</button>
         <button onclick="stopDisplay()">X</button>
@@ -1390,13 +1395,14 @@ function setupV86Input(screen) {
 
 function setupConsoleInput(element) {
   if (!element) return;
-  element.addEventListener("pointerdown", () => element.focus());
+  element.addEventListener("pointerdown", event => {
+    element.focus();
+    if (event.pointerType === "touch") $("serialTextInput")?.focus();
+  });
   element.addEventListener("keydown", sendConsoleKey);
 }
 
 function sendConsoleKey(event) {
-  const emulator = runtimeSession?.emulator;
-  if (!emulator) return;
   let text = "";
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
     text = "\x03";
@@ -1421,6 +1427,27 @@ function sendConsoleKey(event) {
   }
   if (!text) return;
   event.preventDefault();
+  sendSerialText(text);
+}
+
+function sendSerialInput(event) {
+  event.preventDefault();
+  const input = $("serialTextInput");
+  const text = input?.value || "";
+  if (text) sendSerialText(text);
+  sendSerialText("\r");
+  if (input) {
+    input.value = "";
+    input.focus();
+  }
+}
+
+function sendSerialText(text) {
+  const emulator = runtimeSession?.emulator;
+  if (!emulator) {
+    appendOutput("Serial input skipped: v86 is not ready yet.");
+    return;
+  }
   emulator.serial0_send(text);
 }
 
@@ -1634,7 +1661,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-2", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-3", {
     updateViaCache: "none"
   });
 }
