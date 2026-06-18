@@ -477,6 +477,8 @@ function runVM(id = state.selectedId) {
     bootPromptDetected: false,
     autoBootEnter: false,
     autoBootSent: false,
+    keyboardReady: "unknown",
+    serialLines: "unknown",
     module: null,
     diskPath: "/utm/disk.img",
     diskRef: null,
@@ -1278,9 +1280,25 @@ function debugStatusText(session) {
     `mouse=${session.mouseEnabled}`,
     `serialBytes=${session.serialBytes || 0}`,
     `inputs=${session.inputCount || 0}`,
+    `keyboard=${session.keyboardReady}`,
+    `serialLines=${session.serialLines}`,
     `bootPrompt=${session.bootPromptDetected ? "yes" : "no"}`,
     `auto=${session.autoBootEnter ? "on" : "off"}`
   ].join("  ");
+}
+
+function enableSerialModemLines(emulator = runtimeSession?.emulator) {
+  if (!emulator) return;
+  try {
+    emulator.serial_set_carrier_detect(0, true);
+    emulator.serial_set_data_set_ready(0, true);
+    emulator.serial_set_clear_to_send(0, true);
+    runtimeSession.serialLines = "DCD/DSR/CTS";
+    debugLog("serial modem lines enabled: DCD DSR CTS");
+  } catch (error) {
+    runtimeSession.serialLines = "failed";
+    debugLog(`serial modem lines failed: ${error.message || error}`);
+  }
 }
 
 function appendTerminalBytes(bytes) {
@@ -1372,6 +1390,7 @@ async function startLocalV86(vm) {
     boot_order: v86BootOrder(vm),
     autostart: true,
     disable_speaker: true,
+    disable_keyboard: false,
     disable_mouse: vm.displayMode === "serial",
     net_device: undefined
   };
@@ -1385,7 +1404,9 @@ async function startLocalV86(vm) {
   const emulator = new V86(options);
   runtimeSession.emulator = emulator;
   runtimeSession.module = emulator;
+  runtimeSession.keyboardReady = emulator.keyboard_adapter ? "yes" : "no";
   debugLog(`v86 constructor ok; boot=${vm.bootType}; memory=${vm.memory}MiB; vga=${vm.vgaMemory || 8}MiB`);
+  debugLog(`keyboard adapter ${runtimeSession.keyboardReady}`);
   emulator.add_listener("download-progress", progress => {
     if (progress?.total) {
       appendOutput(`Downloading ${progress.file_name || "runtime"}: ${progress.loaded}/${progress.total}`);
@@ -1394,8 +1415,10 @@ async function startLocalV86(vm) {
   });
   emulator.add_listener("emulator-ready", () => {
     runtimeSession.status = "running";
+    runtimeSession.keyboardReady = emulator.keyboard_adapter ? "yes" : "no";
+    enableSerialModemLines(emulator);
     appendOutput("v86 ready.");
-    debugLog("event emulator-ready");
+    debugLog(`event emulator-ready; keyboard adapter ${runtimeSession.keyboardReady}`);
     renderDisplay();
   });
   emulator.add_listener("emulator-stopped", () => {
@@ -1477,7 +1500,10 @@ function renderDebugPanel(session) {
         <button onclick="sendKeyboardEnter()">Key Enter</button>
         <button onclick="sendScancodeEnter()">Scan Enter</button>
         <button onclick="sendSerialOnly('\r')">Serial Enter</button>
+        <button onclick="sendSerialOnly('\n')">Serial LF</button>
+        <button onclick="sendSerialOnly('\r\n')">Serial CRLF</button>
         <button onclick="sendSerialText('\r')">Both Enter</button>
+        <button onclick="enableSerialModemLines()">Serial Lines</button>
         <button onclick="enableAutoBootEnter()">Auto Boot</button>
         <button onclick="copyDebugLog()">Copy Log</button>
         <button onclick="clearDebugLog()">Clear</button>
@@ -1485,6 +1511,10 @@ function renderDebugPanel(session) {
       <form class="debug-send" onsubmit="sendDebugInput(event)">
         <input id="debugInput" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="text or boot label">
         <button type="submit">Send Both</button>
+      </form>
+      <form class="debug-send" onsubmit="sendDebugSerialInput(event)">
+        <input id="debugSerialInput" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="serial label">
+        <button type="submit">Serial CRLF</button>
       </form>
       <pre id="debugOutput">${escapeHtml((session.debug || []).join("\n"))}</pre>
     </section>
@@ -1516,6 +1546,15 @@ function sendDebugInput(event) {
   const text = input?.value || "";
   if (text) sendSerialText(text);
   sendSerialText("\r");
+  if (input) input.value = "";
+}
+
+function sendDebugSerialInput(event) {
+  event.preventDefault();
+  const input = $("debugSerialInput");
+  const text = input?.value || "";
+  if (text) sendSerialOnly(text);
+  sendSerialOnly("\r\n");
   if (input) input.value = "";
 }
 
@@ -1866,7 +1905,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-5", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-6", {
     updateViaCache: "none"
   });
 }
