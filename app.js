@@ -1599,7 +1599,7 @@ async function enableIsolation() {
     showToast("Use HTTPS or localhost");
     return;
   }
-  await navigator.serviceWorker.register("coi-serviceworker.js");
+  await registerIsolationWorker();
   if (!navigator.serviceWorker.controller) {
     navigator.serviceWorker.addEventListener("controllerchange", () => window.location.reload(), { once: true });
     showToast("Reloading with isolation");
@@ -1626,11 +1626,17 @@ async function ensureIsolation() {
     return;
   }
   if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
-  await navigator.serviceWorker.register("coi-serviceworker.js");
+  await registerIsolationWorker();
   if (!sessionStorage.getItem("utm-web-isolation-reload")) {
     sessionStorage.setItem("utm-web-isolation-reload", "1");
     window.location.reload();
   }
+}
+
+function registerIsolationWorker() {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-2", {
+    updateViaCache: "none"
+  });
 }
 
 function renderActionSheet() {
