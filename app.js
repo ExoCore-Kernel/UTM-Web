@@ -1449,6 +1449,27 @@ function sendSerialText(text) {
     return;
   }
   emulator.serial0_send(text);
+  sendKeyboardInput(emulator, text);
+}
+
+function sendKeyboardInput(emulator, text) {
+  const specialKeys = {
+    "\r": 13,
+    "\n": 13,
+    "\x7f": 8,
+    "\t": 9,
+    "\x1b": 27,
+    "\x1b[A": 38,
+    "\x1b[B": 40,
+    "\x1b[C": 39,
+    "\x1b[D": 37
+  };
+  if (specialKeys[text]) {
+    emulator.keyboard_send_keys([specialKeys[text]]);
+    return;
+  }
+  const printable = text.replace(/[\r\n\t\x1b\x7f]/g, "");
+  if (printable) emulator.keyboard_send_text(printable);
 }
 
 async function stopDisplay() {
@@ -1661,7 +1682,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-3", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-4", {
     updateViaCache: "none"
   });
 }
