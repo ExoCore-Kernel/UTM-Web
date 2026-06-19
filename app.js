@@ -33,7 +33,7 @@ const v86Runtime = {
 };
 
 const supportedMachines = [
-  { title: "v86 PC (x86)", arch: "x86", target: "pc", memory: 256, storage: 1, cpu: 1 }
+  { title: "v86 PC (x86)", arch: "x86", target: "pc", memory: 1024, storage: 1, cpu: 1 }
 ];
 
 const storageDbName = "utm-web-storage";
@@ -57,10 +57,10 @@ const defaults = {
       runtime: "local-v86",
       architecture: "x86",
       machine: "pc",
-      memory: 256,
+      memory: 1024,
       cpu: 1,
       storage: 1,
-      vgaMemory: 8,
+      vgaMemory: 32,
       displayMode: "graphical",
       bootType: "iso",
       bootArguments: "",
@@ -119,10 +119,10 @@ function migrateVM(vm) {
       runtime: "local-v86",
       architecture: "x86",
       machine: "pc",
-      memory: Math.max(16, Number(vm.memory || 256)),
+      memory: Math.max(16, Number(vm.memory || 1024)),
       cpu: 1,
       storage: Number(vm.storage || 1),
-      vgaMemory: Number(vm.vgaMemory || 8),
+      vgaMemory: Number(vm.vgaMemory || 32),
       displayMode: vm.displayMode === "serial" ? "serial" : "graphical",
       bootType,
       bootArguments: vm.bootArguments || "",
@@ -479,6 +479,9 @@ function runVM(id = state.selectedId) {
     autoBootSent: false,
     keyboardReady: "unknown",
     serialLines: "unknown",
+    textGrid: Array.from({ length: 80 }, () => []),
+    screenText: "",
+    lastScreenLine: "",
     module: null,
     diskPath: "/utm/disk.img",
     diskRef: null,
@@ -618,9 +621,9 @@ function newWizard() {
     machineIndex: 0,
     architecture: "x86",
     target: "pc",
-    memory: 256,
+    memory: 1024,
     cpu: 1,
-    vgaMemory: 8,
+    vgaMemory: 32,
     storage: 2,
     displayMode: "graphical",
     bootType: "iso",
@@ -1177,8 +1180,8 @@ function v86ConfigPreview(vm) {
     wasm_path: v86Runtime.wasm,
     bios: v86Runtime.bios,
     vga_bios: v86Runtime.vgaBios,
-    memory_size: `${vm.memory || 256} MiB`,
-    vga_memory_size: `${vm.vgaMemory || 8} MiB`,
+    memory_size: `${vm.memory || 1024} MiB`,
+    vga_memory_size: `${vm.vgaMemory || 32} MiB`,
     boot_order: `0x${v86BootOrder(vm).toString(16)}`,
     autostart: true,
     disable_speaker: true,
@@ -1382,9 +1385,12 @@ async function startLocalV86(vm) {
   const { V86 } = await import(runtimeUrl(v86Runtime.module));
   const options = {
     wasm_path: runtimeUrl(v86Runtime.wasm),
-    memory_size: Math.max(16, Number(vm.memory || 256)) * 1024 * 1024,
-    vga_memory_size: Math.max(1, Number(vm.vgaMemory || 8)) * 1024 * 1024,
-    screen_container: screen,
+    memory_size: Math.max(16, Number(vm.memory || 1024)) * 1024 * 1024,
+    vga_memory_size: Math.max(1, Number(vm.vgaMemory || 32)) * 1024 * 1024,
+    screen: {
+      container: screen,
+      use_graphical_text: false
+    },
     bios: { url: runtimeUrl(v86Runtime.bios) },
     vga_bios: { url: runtimeUrl(v86Runtime.vgaBios) },
     boot_order: v86BootOrder(vm),
@@ -1392,7 +1398,9 @@ async function startLocalV86(vm) {
     disable_speaker: true,
     disable_keyboard: false,
     disable_mouse: vm.displayMode === "serial",
-    net_device: undefined
+    net_device: undefined,
+    filesystem: {},
+    preserve_mac_from_state_image: true
   };
   if (payloads.cdrom) options.cdrom = { buffer: uint8ToArrayBuffer(payloads.cdrom) };
   if (payloads.disk) options.hda = { buffer: uint8ToArrayBuffer(payloads.disk) };
@@ -1402,6 +1410,8 @@ async function startLocalV86(vm) {
   if (payloads.state) options.initial_state = { buffer: uint8ToArrayBuffer(payloads.state) };
   if (vm.bootArguments) options.cmdline = vm.bootArguments;
   const emulator = new V86(options);
+  window.emulator = emulator;
+  window.__utmWebRuntime = runtimeSession;
   runtimeSession.emulator = emulator;
   runtimeSession.module = emulator;
   runtimeSession.keyboardReady = emulator.keyboard_adapter ? "yes" : "no";
@@ -1430,6 +1440,9 @@ async function startLocalV86(vm) {
     runtimeSession.screenSize = `${width || 0}x${height || 0}x${bpp || 0}`;
     debugLog(`event screen-set-size ${runtimeSession.screenSize}`);
   });
+  emulator.add_listener("screen-put-char", args => {
+    captureScreenChar(args);
+  });
   emulator.add_listener("mouse-enable", enabled => {
     runtimeSession.mouseEnabled = enabled ? "on" : "off";
     debugLog(`event mouse-enable ${runtimeSession.mouseEnabled}`);
@@ -1438,6 +1451,23 @@ async function startLocalV86(vm) {
     appendTerminalBytes([byte]);
     if ((runtimeSession.serialBytes || 0) % 256 === 0) updateDebugPanel();
   });
+}
+
+function captureScreenChar(args) {
+  if (!runtimeSession || !Array.isArray(args)) return;
+  const [row, col, chr] = args;
+  if (!Number.isInteger(row) || !Number.isInteger(col)) return;
+  if (!runtimeSession.textGrid[row]) runtimeSession.textGrid[row] = [];
+  runtimeSession.textGrid[row][col] = chr >= 32 && chr < 127 ? String.fromCharCode(chr) : " ";
+  const lines = runtimeSession.textGrid
+    .map(cells => cells.join("").trimEnd())
+    .filter(Boolean);
+  runtimeSession.screenText = lines.slice(-30).join("\n");
+  const interesting = lines.find(line => /debian|linux|live|kernel|isolinux|boot|vesamenu|install/i.test(line));
+  if (interesting && interesting !== runtimeSession.lastScreenLine) {
+    runtimeSession.lastScreenLine = interesting;
+    debugLog(`screen: ${interesting}`);
+  }
 }
 
 function uint8ToArrayBuffer(bytes) {
@@ -1461,8 +1491,8 @@ function renderDisplay() {
   $("view").innerHTML = `
     <div class="display-surface ${mode}">
       <div id="v86Screen" class="v86-screen" tabindex="0" aria-label="v86 display">
+        <div class="v86-text"></div>
         <canvas></canvas>
-        <div></div>
       </div>
       <pre id="terminalOutput" class="terminal-output" tabindex="0">${escapeHtml(session.output.join("\n"))}</pre>
       <form class="serial-input" onsubmit="sendSerialInput(event)">
@@ -1569,8 +1599,7 @@ function enableAutoBootEnter() {
 function setupV86Input(screen) {
   if (!screen) return;
   screen.addEventListener("pointerdown", () => screen.focus());
-  screen.addEventListener("touchstart", event => event.preventDefault(), { passive: false });
-  screen.addEventListener("touchmove", event => event.preventDefault(), { passive: false });
+  screen.addEventListener("touchstart", () => screen.focus(), { passive: true });
 }
 
 function setupConsoleInput(element) {
@@ -1905,7 +1934,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260618-6", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260619-1", {
     updateViaCache: "none"
   });
 }
