@@ -129,6 +129,12 @@ bash scripts/fetch-linux-tests.sh
 
 Then open [Linux boot tests](http://127.0.0.1:4173/tests/linux.html). These use official Alpine 3.24 x64/ARM64 kernels and initramfs to reach a shell on two cores. The downloads are ignored by Git and excluded from deployment. Test probes are original code in `tests/fixtures/`; `nasm` rebuilds the PC probes from the included assembly.
 
+## Install UTM on iPhone or iPad
+
+Tap **Install to Home Screen** in the library using Safari. It downloads **UTM.mobileconfig**, which adds a removable, full-screen Web Clip named **UTM**, with the original `assets/Assets.xcassets/AppIcon.appiconset/Icon.png` embedded in the profile. Allow the download, then open **Settings → Profile Downloaded → Install**. This is a home-screen app for the published site; it does not transfer local browser VMs or install a native emulator. The profile contains only that Web Clip.
+
+The included profile opens `https://exocore-kernel.github.io/UTM-Web/`. The static Pages build regenerates it for `GITHUB_REPOSITORY`; set `UTM_APP_URL=https://your-domain.example/app/` when building for a custom domain. Run `node scripts/prepare-home-screen.cjs` to regenerate the checked-in download. The profile stays entirely static; a phone user finishes installation in Settings. Safari's Share → Add to Home Screen is also available, using the same icon and UTM name. See [Apple's profile installation instructions](https://support.apple.com/en-us/102400).
+
 ## GitHub Pages
 
 The Pages workflow runs the Node checks, prepares `dist/`, then uploads only static app/runtime files and the small runtime verification fixtures. Rust compilation and npm dependencies are unnecessary for deployment. In GitHub repository Settings → Pages, select **GitHub Actions**.

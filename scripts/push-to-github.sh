@@ -9,11 +9,11 @@ node --test tests/runtime.test.cjs tests/network.test.mjs tests/ethernet.test.mj
 node scripts/prepare-pages.cjs
 publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/utm-web-publish.XXXXXX")"
 git clone --branch main --single-branch "$repository_url" "$publish_dir"
-for source_item in index.html app.js runtime-config.js browser-storage.js disk-images.mjs styles.css coi-serviceworker.js manifest.webmanifest assets vendor/v64 tests scripts .github .gitignore .nojekyll LICENSE README.md; do
+for source_item in index.html app.js runtime-config.js browser-storage.js disk-images.mjs styles.css coi-serviceworker.js manifest.webmanifest UTM.mobileconfig assets vendor/v64 tests scripts .github .gitignore .nojekyll LICENSE README.md; do
   mkdir -p "$publish_dir/$(dirname "$source_item")"
   rsync -a --exclude='manual/' --exclude='.DS_Store' "$source_dir/$source_item" "$publish_dir/$(dirname "$source_item")/"
 done
-git -C "$publish_dir" add -- index.html app.js runtime-config.js browser-storage.js disk-images.mjs styles.css coi-serviceworker.js manifest.webmanifest assets vendor/v64 tests scripts .github .gitignore .nojekyll LICENSE README.md
+git -C "$publish_dir" add -- index.html app.js runtime-config.js browser-storage.js disk-images.mjs styles.css coi-serviceworker.js manifest.webmanifest UTM.mobileconfig assets vendor/v64 tests scripts .github .gitignore .nojekyll LICENSE README.md
 if git -C "$publish_dir" diff --cached --quiet; then
   echo "No changes to push."
   exit 0

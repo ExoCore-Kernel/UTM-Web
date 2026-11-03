@@ -24,7 +24,7 @@ const network = qemu ? {
   gateway: "10.0.2.2", dns: "10.0.2.3", forwards,
   limits: "NAT; no Wi-Fi radio passthrough. External ICMP and IPv6 depend on host support. Inbound ports need forwarding."
 } : { internet: false, error: "Install QEMU with its user networking backend (macOS: brew install qemu)." };
-const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".json": "application/json", ".webmanifest": "application/manifest+json", ".png": "image/png", ".svg": "image/svg+xml" };
+const types = { ".mobileconfig": "application/x-apple-aspen-config", ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".json": "application/json", ".webmanifest": "application/manifest+json", ".png": "image/png", ".svg": "image/svg+xml" };
 const lanAddresses = [...new Set(Object.values(networkInterfaces()).flat().filter(item => item?.family === "IPv4" && !item.internal).map(item => item.address))];
 const allowedHosts = new Set(["127.0.0.1", "localhost", ...(lan ? [...lanAddresses, hostname().toLowerCase(), hostname().split(".")[0].toLowerCase() + ".local"] : [])]);
 const validHost = value => {

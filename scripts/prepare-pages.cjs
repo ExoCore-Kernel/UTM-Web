@@ -9,6 +9,7 @@ for (const file of ['index.html', 'app.js', 'runtime-config.js', 'browser-storag
   fs.copyFileSync(path.join(root, file), path.join(output, file));
 }
 for (const folder of ['assets', 'vendor/v64']) fs.cpSync(path.join(root, folder), path.join(output, folder), { recursive: true });
+require('./prepare-home-screen.cjs').writeProfile(path.join(output, 'UTM.mobileconfig'));
 fs.mkdirSync(path.join(output, 'tests/fixtures'), { recursive: true });
 for (const file of ['browser.html', 'browser.mjs']) fs.copyFileSync(path.join(root, 'tests', file), path.join(output, 'tests', file));
 for (const file of ['x86.img', 'x86_64.img', 'arm64.bin', 'arm32.bin', 'disk.img']) fs.copyFileSync(path.join(root, 'tests/fixtures', file), path.join(output, 'tests/fixtures', file));

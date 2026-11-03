@@ -451,6 +451,7 @@ function renderLibrary() {
         <div class="group">
           ${navRow("Create Linux VM", "sf:plus.circle", "icon-blue", "openWizard()")}
           ${navRow("Import VM Config", "sf:doc", "icon-gray", "showImportConfigSheet()")}
+          ${navRow("Install to Home Screen", assets.utm, "", "downloadHomeScreenProfile()", "iPhone / iPad")}
           ${navRow("Browser Storage", "sf:externaldrive", "icon-purple", "openStorage()", storageInfo?.usage ? formatBytes(storageInfo.usage) : "On device")}
         </div>
       </section>
@@ -462,6 +463,13 @@ function renderLibrary() {
       <div class="ipad-detail-panel">${renderDetailBody(vmById(state.selectedId), true)}</div>
     </div>
   `;
+}
+
+function downloadHomeScreenProfile() {
+  showToast("In Safari, allow the profile download. Then open Settings → Profile Downloaded → Install. The UTM icon opens the published app on your Home Screen.");
+  // A real static .mobileconfig URL lets Safari recognize the profile download.
+  // Avoid Blob/data URLs, which iOS may save as a file without offering installation.
+  window.location.assign(new URL("UTM.mobileconfig", window.location.href).href);
 }
 
 function isIpadLayout() {
@@ -2522,7 +2530,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261103-ui-disks", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261103-install", {
     updateViaCache: "none"
   });
 }
