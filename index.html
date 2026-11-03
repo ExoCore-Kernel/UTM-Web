@@ -3,17 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f2f2f7">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="description" content="Your virtual machines, right in your browser. Private, local x86, x64 and ARM emulation.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="assets/utm-icon.png">
   <title>UTM Web</title>
-  <link rel="stylesheet" href="styles.css?v=v86-20260619-1">
+  <link rel="stylesheet" href="styles.css?v=v64-20261103-lan2">
 </head>
 <body>
   <div class="device-shell">
     <div id="app" class="utm-ios-app">
       <nav id="nav" class="nav-bar"></nav>
       <main id="view" class="view"></main>
-      <aside id="actionSheet" class="action-sheet" aria-hidden="true"></aside>
+      <aside id="actionSheet" class="action-sheet" aria-hidden="true" onclick="if (event.target === this) hideSheet()"></aside>
     </div>
   </div>
-  <script src="app.js?v=v86-20260619-1"></script>
+  <script src="runtime-config.js?v=v64-20261103-lan2"></script>
+  <script src="browser-storage.js?v=v64-20261103-lan2"></script>
+  <script src="app.js?v=v64-20261103-lan2"></script>
 </body>
 </html>

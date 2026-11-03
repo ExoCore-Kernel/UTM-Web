@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>UTM-Web Linux boot tests</title>
+<style>body{font:15px system-ui;background:#111;color:#eee;margin:20px}button{padding:12px}pre{white-space:pre-wrap}iframe{width:100%;height:680px;border:1px solid #555}</style>
+<h1>Official Alpine Linux boot checks</h1><p>Local QA only. Requires the optional Alpine 3.24 netboot files in tests/manual.</p><button id="run">Boot x64 and ARM64 Linux</button><pre id="results">Ready.</pre><iframe src="../index.html?linux-test=1" title="Linux guest"></iframe>
+<script type="module">
+const output=document.querySelector('pre'), button=document.querySelector('button'), frame=document.querySelector('iframe');
+const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+async function until(check,label,timeout=180000){const start=Date.now();while(Date.now()-start<timeout){if(check())return;await pause(200);}throw new Error(label);}
+button.onclick=async()=>{button.disabled=true;output.textContent='';const app=frame.contentWindow;
+try{for(const architecture of ['x86_64','arm64']){
+const files={};for(const [role,name] of [['kernel','vmlinuz-virt'],['initrd','initramfs-virt']]){const response=await fetch(`manual/${architecture==='arm64'?'aarch64':architecture}/${name}`);if(!response.ok)throw new Error('Optional Linux test media missing');files[role]=await app.importFileToStore(new app.File([await response.blob()],name),role);}
+const vm={name:`Alpine 3.24 ${architecture}`,runtime:'local-v64',architecture,machine:architecture==='arm64'?'virt':'i440fx',memory:512,vgaMemory:8,cpu:2,bootType:'kernel',displayMode:'serial',saveOnStop:false,bootArguments:`console=${architecture==='arm64'?'ttyAMA0':'ttyS0'} rdinit=/bin/sh`,fileRefs:files};
+await app.importConfig({files:[{text:async()=>JSON.stringify({vm})}]});app.runVM(app.vmById().id);
+await until(()=>/can't access tty|~ #|\/ #/.test(app.document.querySelector('#terminalOutput')?.textContent||'')||/Stopped:/.test(app.document.querySelector('#terminalOutput')?.textContent||''),`${architecture} Linux shell timed out`);
+app.sendSerialOnly('uname -m; echo UTM-LINUX-OK\n');
+await until(()=>app.document.querySelector('#terminalOutput')?.textContent.includes('UTM-LINUX-OK'),`${architecture} shell command timed out`,30000);
+const terminal=app.document.querySelector('#terminalOutput').textContent;
+if(!terminal.includes(architecture==='arm64'?'aarch64':'x86_64'))throw new Error('Wrong guest architecture');
+output.textContent+=`PASS ${architecture}: official Linux 6.18 kernel and Alpine userspace shell on 2 cores.\n`;
+await app.stopDisplay();
+}output.textContent+='ALL LINUX CHECKS PASSED';}catch(error){output.textContent+=`FAIL ${error.stack}`;}finally{button.disabled=false;}};
+</script></html>

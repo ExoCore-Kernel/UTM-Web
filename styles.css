@@ -372,6 +372,7 @@ textarea {
 }
 
 .vm-name {
+  display: block;
   overflow: hidden;
   margin: 0 0 2px;
   font-size: 17px;
@@ -381,6 +382,7 @@ textarea {
 }
 
 .vm-subtitle {
+  display: block;
   overflow: hidden;
   margin: 0;
   color: var(--muted);
@@ -971,3 +973,79 @@ textarea {
     margin-right: auto;
   }
 }
+
+/* Touch polish, retaining the grouped iOS surfaces and system typography. */
+:root { --ease-out: cubic-bezier(.2,.8,.2,1); }
+body { overscroll-behavior-y: none; }
+.device-shell { height: 100dvh; }
+.utm-ios-app { grid-template-rows: calc(52px + env(safe-area-inset-top)) minmax(0, 1fr); }
+.nav-bar { padding-top: env(safe-area-inset-top); }
+.nav-button { min-width: 44px; min-height: 44px; }
+.view { padding-bottom: calc(26px + env(safe-area-inset-bottom)); overscroll-behavior: contain; }
+.library-caption { margin: -7px 2px 22px; color: var(--muted); font-size: 14px; }
+.library-list { padding-bottom: calc(26px + env(safe-area-inset-bottom)); }
+button, .vm-row { transition: background-color .18s ease, color .18s ease, transform .18s var(--ease-out), opacity .18s ease; }
+button:active { opacity: .7; }
+.big-play:active, .play-button:active { transform: scale(.9); }
+.nav-row:active, .choice-row:active { background: #e9e9f0; }
+button:disabled { opacity: .4; cursor: progress; }
+button:focus-visible, [tabindex]:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid rgba(0,122,255,.55); outline-offset: -3px; }
+.vm-row { min-height: 72px; }
+.vm-row.selected .play-button { background: rgba(255,255,255,.22); color: white; }
+.play-button { width: 44px; height: 44px; flex-basis: 44px; }
+.stepper { grid-template-columns: 44px 42px 44px; }
+.stepper button, .stepper span { min-height: 44px; }
+.range-row input[type="number"] { min-height: 44px; }
+.file-button { min-height: 44px; min-width: 0; }
+.file-button .row-value { max-width: 100%; }
+.action-sheet { padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+.action-sheet.active { animation: backdrop-in .2s ease both; }
+.sheet-stack { max-width: 540px; max-height: 90%; overflow: auto; margin: 0 auto; animation: sheet-in .3s var(--ease-out) both; }
+.sheet-title { font-size: 14px; line-height: 1.45; padding: 18px; }
+.storage-intro { text-align: center; padding: 20px 4px 8px; }
+.storage-intro .round-icon { width: 56px; height: 56px; border-radius: 15px; margin: 0 auto 15px; }
+.storage-intro .round-icon svg { width: 29px; height: 29px; }
+.storage-intro h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
+.storage-intro p { color: var(--muted); font-size: 15px; line-height: 1.4; }
+.storage-card progress { display: block; width: calc(100% - 32px); height: 7px; margin: 4px 16px 16px; border: 0; border-radius: 99px; accent-color: var(--purple); overflow: hidden; }
+.storage-card progress::-webkit-progress-bar { background: #eeeef3; }
+.storage-card progress::-webkit-progress-value { border-radius: 99px; background: var(--purple); }
+.operation-banner { position: absolute; z-index: 50; top: calc(64px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; max-width: calc(100% - 32px); padding: 13px 18px; border-radius: 18px; color: var(--text); background: rgba(255,255,255,.96); box-shadow: 0 5px 28px #0002; font-size: 14px; pointer-events: auto; }
+.progress-spinner { width: 17px; height: 17px; flex-shrink: 0; border: 2px solid #007aff33; border-top-color: var(--blue); border-radius: 50%; animation: spin .8s linear infinite; }
+.floating-toolbar { top: calc(12px + env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); gap: 5px; max-width: calc(100% - 24px); padding: 5px; border-radius: 18px; background: rgba(28,28,30,.6); backdrop-filter: blur(20px); overflow-x: auto; }
+.floating-toolbar button { width: auto; min-width: 44px; height: 44px; padding: 0 9px; border-radius: 12px; font-size: 12px; font-weight: 600; background: rgba(118,118,128,.35); }
+.serial-input { bottom: calc(12px + env(safe-area-inset-bottom)); left: max(14px, env(safe-area-inset-left)); right: max(14px, env(safe-area-inset-right)); }
+.serial-input input, .serial-input button { height: 44px; font-size: 16px; }
+.runtime-chip { bottom: calc(68px + env(safe-area-inset-bottom)); }
+.terminal-output { padding-top: calc(80px + env(safe-area-inset-top)); padding-bottom: calc(110px + env(safe-area-inset-bottom)); }
+.debug-panel { top: calc(82px + env(safe-area-inset-top)); }
+@keyframes sheet-in { from { transform: translateY(36px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes backdrop-in { from { background: transparent; } to { background: rgba(0,0,0,.26); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 520px) {
+  .device-shell { height: 100dvh; }
+  input, select, textarea { font-size: 16px; }
+  .row { gap: 8px; }
+  .row > input, .row > select { min-width: 0; }
+  .row-title { max-width: 52%; }
+  .row-value { margin-left: 4px; font-size: 15px; }
+  .runtime-preview { padding: 26px 16px; grid-template-columns: 48px minmax(0,1fr) 48px; gap: 12px; }
+  .runtime-preview img { width: 46px; height: 46px; }
+  .runtime-preview h2 { font-size: 23px; }
+  .runtime-preview .big-play { width: 46px; height: 46px; }
+  .choice-copy strong { font-size: 21px; }
+  .floating-toolbar { left: 12px; right: 12px; justify-content: space-between; }
+  .floating-toolbar button { padding: 0 7px; }
+  .range-row { gap: 8px; grid-template-columns: minmax(50px,1fr) 55px; }
+}
+@media (min-width: 760px) {
+  .utm-ios-app { grid-template-rows: calc(52px + env(safe-area-inset-top)) minmax(0,1fr); }
+  .utm-ios-app.display-mode { grid-template-rows: 1fr; }
+  .view:not(.library-view):not(.display-view) > .section { max-width: 800px; margin-left: auto; margin-right: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+.import-option { position: relative; display: block; margin: 10px 0; padding: 14px; border-radius: 10px; color: var(--blue); background: rgba(0,122,255,.08); text-align: center; font-weight: 600; cursor: pointer; }
+.import-option input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.sheet-import p { margin: 0 0 16px; font-size: 14px; line-height: 1.45; color: var(--muted); text-align: center; }

@@ -24,9 +24,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify runtime and prepare static files
+        run: |
+          node --check app.js
+          node --check runtime-config.js
+          node --check browser-storage.js
+          node --check scripts/serve-local.mjs
+          node --check scripts/ethernet-relay.mjs
+          node --test tests/runtime.test.cjs tests/network.test.mjs tests/ethernet.test.mjs
+          node scripts/prepare-pages.cjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: dist
       - id: deployment
         uses: actions/deploy-pages@v4

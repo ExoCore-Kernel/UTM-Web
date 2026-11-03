@@ -1,0 +1,12 @@
+{
+  "name": "UTM Web",
+  "short_name": "UTM",
+  "description": "Your virtual machines, in your browser.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f2f2f7",
+  "theme_color": "#f2f2f7",
+  "icons": [{ "src": "assets/utm-icon.png", "sizes": "any", "type": "image/png", "purpose": "any" }]
+}

@@ -17,23 +17,16 @@ const assets = {
 };
 
 const v86Runtime = {
-  module: "vendor/v86/build/libv86.mjs",
-  wasm: "vendor/v86/build/v86.wasm",
-  fallbackWasm: "vendor/v86/build/v86-fallback.wasm",
-  bios: "vendor/v86/bios/seabios.bin",
-  vgaBios: "vendor/v86/bios/vgabios.bin",
-  docs: "vendor/v86/Readme.md",
-  upstream: "https://github.com/copy/v86",
-  bootOrders: {
-    cdrom: 0x123,
-    disk: 0x132,
-    floppy: 0x231,
-    auto: 0
-  }
+  module: "vendor/v64/build/libv86.mjs",
+  docs: "vendor/v64/Readme.md",
+  upstream: "https://github.com/speedyHKjournalist/v64"
 };
 
 const supportedMachines = [
-  { title: "v86 PC (x86)", arch: "x86", target: "pc", memory: 1024, storage: 1, cpu: 1 }
+  { title: "PC · x86 (32-bit)", arch: "x86", target: "i440fx", memory: 512, storage: 1, cpu: 1 },
+  { title: "PC · x86_64 (64-bit)", arch: "x86_64", target: "i440fx", memory: 1024, storage: 2, cpu: 1 },
+  { title: "ARM64 · virt (64-bit)", arch: "arm64", target: "virt", memory: 512, storage: 2, cpu: 1 },
+  { title: "ARM32 · virt (32-bit)", arch: "arm32", target: "virt", memory: 512, storage: 1, cpu: 1 }
 ];
 
 const storageDbName = "utm-web-storage";
@@ -53,10 +46,11 @@ const defaults = {
       os: "Linux",
       status: "Stopped",
       icon: assets.linux,
-      notes: "A local v86 PC configuration. Import an ISO, raw disk, floppy image, or Linux bzImage into browser storage and boot it with the vendored v86 runtime.",
-      runtime: "local-v86",
+      notes: "A local v64 PC configuration. Import an ISO, raw disk, floppy image, or Linux bzImage into browser storage and boot it with the vendored v64 runtime.",
+      runtime: "local-v64",
       architecture: "x86",
-      machine: "pc",
+      machine: "i440fx",
+      firmware: "seabios",
       memory: 1024,
       cpu: 1,
       storage: 1,
@@ -65,7 +59,7 @@ const defaults = {
       bootType: "iso",
       bootArguments: "",
       fileRefs: {},
-      network: "none"
+      network: "auto"
     }
   ]
 };
@@ -73,6 +67,9 @@ const defaults = {
 let state = loadState();
 let transientFiles = new Map();
 let runtimeSession = null;
+let storageInfo = null;
+let busyOperation = false;
+let routeAnimationKey = "";
 const terminalDecoder = new TextDecoder();
 const terminalEncoder = new TextEncoder();
 
@@ -80,13 +77,8 @@ function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem("utm-web-state") || "null");
     if (saved && Array.isArray(saved.vms)) {
-      const defaultIds = new Set(defaults.vms.map(vm => vm.id));
-      const legacyDefaultIds = new Set(["alpine-demo", "linux-custom"]);
-      const migrated = saved.vms
-        .map(migrateVM)
-        .filter(Boolean)
-        .filter(vm => !defaultIds.has(vm.id) && !legacyDefaultIds.has(vm.id));
-      const vms = [...structuredClone(defaults.vms), ...migrated];
+      const vms = saved.vms.map(migrateVM).filter(Boolean);
+      if (!vms.length) vms.push(...structuredClone(defaults.vms));
       const selectedId = vms.some(vm => vm.id === saved.selectedId) ? saved.selectedId : defaults.selectedId;
       return {
         ...structuredClone(defaults),
@@ -105,32 +97,20 @@ function loadState() {
 }
 
 function migrateVM(vm) {
-  if (!vm || typeof vm !== "object") return null;
-  const legacyRuntime = vm.runtime && vm.runtime !== "local-v86";
-  if (vm.runtime === "local-v86" || legacyRuntime || vm.os === "Linux" || ["x86", "x86_64", "i386"].includes(vm.architecture)) {
-    const bootType = vm.bootType === "packaged-demo" ? "iso" : (vm.bootType || "iso");
-    return {
-      ...structuredClone(defaults.vms[0]),
-      id: vm.id || `vm-${Date.now()}`,
-      name: vm.name || "Linux",
-      notes: /runtime files|hosted demo|demo site/i.test(vm.notes || "")
-        ? "Migrated to the local v86 runtime. Reattach boot media if the old demo files were used."
-        : (vm.notes || "Local browser VM config generated from UTM-Web for v86."),
-      runtime: "local-v86",
-      architecture: "x86",
-      machine: "pc",
-      memory: Math.max(16, Number(vm.memory || 1024)),
-      cpu: 1,
-      storage: Number(vm.storage || 1),
-      vgaMemory: Number(vm.vgaMemory || 32),
-      displayMode: vm.displayMode === "serial" ? "serial" : "graphical",
-      bootType,
-      bootArguments: vm.bootArguments || "",
-      fileRefs: vm.fileRefs || {},
-      status: "Stopped"
-    };
+  try {
+    const migrated = UTMRuntime.normalize({ ...structuredClone(defaults.vms[0]), ...vm });
+    // Runtime snapshots are not portable across v86 and v64. Keep the file for export.
+    if (vm.runtime !== "local-v64" && migrated.fileRefs.state) {
+      migrated.fileRefs.state = { ...migrated.fileRefs.state, runtime: "local-v86" };
+    }
+    migrated.id = String(vm.id || storageId("vm")).replace(/[^A-Za-z0-9_-]/g, "-");
+    migrated.name = String(vm.name || "Linux");
+    migrated.icon = assets.linux;
+    return migrated;
+  } catch (error) {
+    console.warn("Cannot load VM:", error.message);
+    return null;
   }
-  return null;
 }
 
 function saveState() {
@@ -198,8 +178,42 @@ async function importFileToStore(file, role) {
     savedAt: Date.now(),
     blob: file
   };
-  await putRecord(record);
-  return fileMeta(record);
+  try {
+    const info = await UTMStorage.estimate();
+    if (info.quota && file.size > info.quota - (info.usage || 0)) {
+      throw new DOMException("This file exceeds the available browser storage.", "QuotaExceededError");
+    }
+    if (["disk", "disk2"].includes(role) && UTMRuntime.diskFormat(record) === "raw" && UTMStorage.supportsOPFS()) {
+      record.url = `opfs:utm-web/disks/${record.id}.img`;
+      record.storage = "opfs";
+      await UTMStorage.copy(record.url, file);
+      delete record.blob;
+    }
+    await putRecord(record);
+    refreshStorageInfo();
+    return fileMeta(record);
+  } catch (error) {
+    if (record.url) await UTMStorage.remove(record.url).catch(() => {});
+    if (error.name !== "QuotaExceededError") throw error;
+    transientFiles.set(record.id, file);
+    showToast("Browser storage is full. This file is available for this tab only; reattach it after reopening the app. Use Download to keep VM snapshots on your device.");
+    return { ...fileMeta(record), storage: "temporary", url: undefined };
+  }
+}
+
+async function storedFile(ref, transientKey) {
+  const transient = transientFiles.get(ref?.id) || transientFiles.get(transientKey);
+  if (ref?.storage === "opfs") return UTMStorage.file(ref.url);
+  if (transient) return transient;
+  return ref?.id ? (await getRecord(ref.id))?.blob || null : null;
+}
+
+async function removeStoredFile(ref) {
+  if (!ref?.id) return;
+  if (state.vms.some(vm => Object.values(vm.fileRefs || {}).some(file => file.id === ref.id))) return;
+  if (ref.storage === "opfs") await UTMStorage.remove(ref.url);
+  await withFileStore("readwrite", store => store.delete(ref.id));
+  transientFiles.delete(ref.id);
 }
 
 async function putBytesToStore(name, role, bytes, type = "application/octet-stream") {
@@ -219,14 +233,8 @@ async function putBytesToStore(name, role, bytes, type = "application/octet-stre
 }
 
 async function readStoredBytes(ref, transientKey) {
-  const transient = transientFiles.get(transientKey || ref?.id);
-  if (transient) {
-    return new Uint8Array(await transient.arrayBuffer());
-  }
-  if (!ref?.id) return null;
-  const record = await getRecord(ref.id);
-  if (!record?.blob) return null;
-  return new Uint8Array(await record.blob.arrayBuffer());
+  const file = await storedFile(ref, transientKey);
+  return file ? new Uint8Array(await file.arrayBuffer()) : null;
 }
 
 async function updateStoredBytes(ref, bytes) {
@@ -293,7 +301,15 @@ function render() {
   if (state.route.name === "settings") renderSettingsRoot();
   if (state.route.name === "settingsPane") renderSettingsPane();
   if (state.route.name === "display") renderDisplay();
+  if (state.route.name === "storage") renderStorage();
   renderActionSheet();
+  const key = `${state.route.name}:${state.route.page || state.route.pane || state.route.id || ""}`;
+  if (key !== routeAnimationKey && state.route.name !== "display") {
+    routeAnimationKey = key;
+    if (!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      $("view").animate?.([{ opacity: 0, transform: "translateY(7px)" }, { opacity: 1, transform: "translateY(0)" }], { duration: 210, easing: "cubic-bezier(.2,.8,.2,1)" });
+    }
+  }
 }
 
 function row(title, value = "", attrs = "") {
@@ -399,9 +415,10 @@ function codeBlock(text) {
 
 function fileAccept(key) {
   return {
-    kernel: ".bin,.elf,.img,vmlinuz",
+    kernel: ".bin,.elf,.img,.gz,.bzimage,.zimage,.image,vmlinuz",
     initrd: ".img,.initrd,.gz",
-    disk: ".raw,.img,.qcow2,.qcow,.vmdk",
+    disk: ".raw,.img,.qcow2,.vhd,.vdi,.vmdk,.vhdx",
+    disk2: ".raw,.img,.qcow2,.vhd,.vdi,.vmdk,.vhdx",
     cdrom: ".iso,.img",
     floppy: ".img,.ima,.flp",
     state: ".bin,.v86state"
@@ -414,6 +431,7 @@ function renderLibrary() {
   const list = `
     <div class="library-list">
       <h1 class="large-title">UTM</h1>
+      <p class="library-caption">Your machines. On your device.</p>
       <section class="section">
         <div class="group">
           ${state.vms.map(vm => `
@@ -421,7 +439,7 @@ function renderLibrary() {
               <img src="${escapeHtml(vm.icon)}" alt="">
               <span class="vm-meta">
                 <span class="vm-name">${escapeHtml(vm.name)}</span>
-                <span class="vm-subtitle">${escapeHtml(vm.status)}</span>
+                <span class="vm-subtitle">${escapeHtml(vm.architecture)} · ${escapeHtml(vm.status)}</span>
               </span>
               <button class="play-button" onclick="event.stopPropagation(); runVM('${vm.id}')">&#9654;</button>
             </div>
@@ -431,7 +449,8 @@ function renderLibrary() {
       <section class="section">
         <div class="group">
           ${navRow("Create Linux VM", "sf:plus.circle", "icon-blue", "openWizard()")}
-          ${navRow("Import UTM-Web Config", "sf:doc", "icon-gray", "showImportConfigSheet()")}
+          ${navRow("Import VM Config", "sf:doc", "icon-gray", "showImportConfigSheet()")}
+          ${navRow("Browser Storage", "sf:externaldrive", "icon-purple", "openStorage()", storageInfo?.usage ? formatBytes(storageInfo.usage) : "On device")}
         </div>
       </section>
     </div>
@@ -458,7 +477,9 @@ function libraryTap(id) {
 }
 
 function runVM(id = state.selectedId) {
+  if (runtimeSession || busyOperation) return;
   const vm = vmById(id);
+  try { UTMRuntime.validate(vm); } catch (error) { showToast(error.message); return; }
   state.selectedId = vm.id;
   vm.status = "Starting";
   saveState();
@@ -487,6 +508,7 @@ function runVM(id = state.selectedId) {
     diskRef: null,
     startedAt: Date.now()
   };
+  window.__utmWebRuntime = runtimeSession;
   setRoute({ name: "display", id: vm.id });
   queueMicrotask(() => startRuntime(vm.id));
 }
@@ -523,6 +545,7 @@ function renderDetailBody(vm) {
         ${row("Display", displayLabel(vm))}
         ${row("Boot", bootLabel(vm))}
         ${row("Network", networkLabel(vm))}
+        ${row("Saving", vm.saveOnStop === false ? "Manual snapshots" : "Snapshot on stop")}
       </div>
     </section>
     ${missing.length ? `
@@ -535,15 +558,18 @@ function renderDetailBody(vm) {
       <section class="section">
         <p class="section-title">Attached Media</p>
         <div class="group">
-          ${Object.entries(vm.fileRefs).map(([key, file]) => row(fileTitle(key), `${file.name} · ${formatBytes(file.size)}`)).join("")}
+          ${Object.entries(vm.fileRefs).map(([key, file]) => row(fileTitle(key), `${file.name} · ${formatBytes(file.size)}${file.storage === "temporary" ? " · This tab only" : ""}`)).join("")}
           ${vm.fileRefs?.disk ? navRow("Download Disk Image", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'disk')`) : ""}
+          ${vm.fileRefs?.disk2 ? navRow("Download Second Disk", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'disk2')`) : ""}
+          ${vm.fileRefs?.diskExport ? navRow("Download Saved Disk Copy", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'diskExport')`) : ""}
           ${vm.fileRefs?.state ? navRow("Download Save State", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'state')`) : ""}
         </div>
       </section>
     ` : ""}
     <section class="section">
-      <p class="section-title">v86</p>
+      <p class="section-title">v64</p>
       <div class="group">
+        ${navRow("Edit VM Settings", "sf:cpu", "icon-orange", `editVM('${vm.id}')`)}
         ${navRow("Copy Launch Config", "sf:doc.on.clipboard", "icon-blue", `copyV86Config('${vm.id}')`)}
         ${navRow("Export Config", "sf:square.and.arrow.down", "icon-green", `exportConfig('${vm.id}')`)}
       </div>
@@ -557,19 +583,35 @@ function renderDetailBody(vm) {
 }
 
 function runtimeLabel(vm) {
-  return "Local v86";
+  return "Local v64";
 }
 
 function networkLabel(vm) {
-  return "None";
+  if (vm.network === "none" || !vm.network) return "Off";
+  if (vm.network === "local" || vm.network === "auto" && UTMRuntime.localRelayAvailable) return "Local NAT · TCP + UDP";
+  return "Browser HTTP · limited";
+}
+
+async function configureNetwork() {
+  UTMRuntime.localRelayAvailable = false;
+  if (!window.location) return;
+  try {
+    const response = await fetch("/utm-local-status.json", { cache: "no-store", signal: AbortSignal.timeout(1500) });
+    if (response.ok) {
+      const status = await response.json();
+      UTMRuntime.localRelayAvailable = status.internet === "ethernet";
+      UTMRuntime.localNetworkStatus = status;
+      if (state.route.name === "library") renderLibrary();
+    }
+  } catch { /* A plain static server has no TCP relay. */ }
 }
 
 function displayLabel(vm) {
-  return vm.displayMode === "serial" ? "Serial log" : "VGA display";
+  return vm.displayMode === "serial" ? "Serial console" : UTMRuntime.isARM(vm) ? "Virtio GPU" : "VGA display";
 }
 
 function bootLabel(vm) {
-  if (vm.bootType === "kernel") return "Linux bzImage";
+  if (vm.bootType === "kernel") return UTMRuntime.isARM(vm) ? "Linux Image / zImage" : "Linux bzImage";
   if (vm.bootType === "iso") return "Boot ISO image";
   if (vm.bootType === "floppy") return "Floppy image";
   return "Raw disk image";
@@ -587,9 +629,11 @@ function fileTitle(key) {
     kernel: "Kernel",
     initrd: "Initial Ramdisk",
     disk: "Disk Image",
+    disk2: "Second Disk",
     cdrom: "CD/DVD Image",
     floppy: "Floppy Image",
-    state: "Save State"
+    state: "Save State",
+    diskExport: "Saved Disk Copy"
   }[key] || key;
 }
 
@@ -602,10 +646,7 @@ function formatBytes(bytes) {
 }
 
 function diskFormat(ref) {
-  const name = String(ref?.name || "").toLowerCase();
-  if (name.endsWith(".qcow2") || name.endsWith(".qcow")) return "qcow2";
-  if (name.endsWith(".vmdk")) return "vmdk";
-  return "raw";
+  return UTMRuntime.diskFormat(ref);
 }
 
 function openWizard() {
@@ -617,10 +658,11 @@ function newWizard() {
   return {
     history: [],
     page: "start",
-    runtime: "local-v86",
-    machineIndex: 0,
-    architecture: "x86",
-    target: "pc",
+    runtime: "local-v64",
+    machineIndex: 1,
+    architecture: "x86_64",
+    target: "i440fx",
+    firmware: "seabios",
     memory: 1024,
     cpu: 1,
     vgaMemory: 32,
@@ -668,11 +710,17 @@ function renderWizardPage(page) {
 function wizardStart() {
   return `
     <section class="section">
+      <p class="section-title">Architecture</p>
+      <div class="group">
+        ${selectRow("Machine", supportedMachines[state.wizard.machineIndex].title, supportedMachines.map(machine => machine.title), "chooseMachine(this.selectedIndex)")}
+      </div>
+    </section>
+    <section class="section">
       <p class="section-title">Custom</p>
       <div class="group">
         <button class="choice-row" onclick="wizardContinue()">
           ${iconMarkup(assets.linux)}
-          <span class="choice-copy"><strong>Linux</strong><span>v86 x86 system emulation in the browser.</span></span>
+          <span class="choice-copy"><strong>Linux</strong><span>x86, x64, ARM64 and ARM32 emulation in the browser.</span></span>
           <span class="checkmark">&#10003;</span>
         </button>
       </div>
@@ -680,10 +728,10 @@ function wizardStart() {
     <section class="section">
       <p class="section-title">Runtime</p>
       <div class="group">
-        ${row("Engine", "v86")}
-        ${row("Display", "VGA + serial log")}
+        ${row("Engine", "v64")}
+        ${row("Display", "VGA / Virtio GPU + serial")}
         ${row("Acceleration", "WebAssembly JIT")}
-        ${row("Network", "Off")}
+        ${row("Network", networkLabel({ network: "auto" }))}
       </div>
     </section>
   `;
@@ -693,7 +741,7 @@ function wizardBoot() {
   return `
     <section class="section">
       <div class="group">
-        ${selectRow("Boot Type", state.wizard.bootType, ["iso", "disk", "floppy", "kernel"], "setWizardValue('bootType', this.value)")}
+        ${selectRow("Boot Type", state.wizard.bootType, UTMRuntime.bootTypes(state.wizard), "setWizardValue('bootType', this.value)")}
       </div>
     </section>
     ${state.wizard.bootType === "iso" ? `
@@ -734,7 +782,9 @@ function wizardHardware() {
   return `
     <section class="section">
       <div class="group">
-        ${selectRow("Machine", selected.title, supportedMachines.map(machine => machine.title), "chooseMachine(this.selectedIndex)")}
+        ${row("Architecture", selected.title)}
+        ${selectRow("Board", state.wizard.target, UTMRuntime.machineTypes(state.wizard), "setWizardValue('target', this.value)")}
+        ${state.wizard.architecture === "x86_64" ? selectRow("Firmware", state.wizard.firmware, ["seabios", "uefi"], "setWizardValue('firmware', this.value)") : ""}
       </div>
     </section>
     <section class="section">
@@ -742,7 +792,7 @@ function wizardHardware() {
       <div class="group">
         ${selectRow("Mode", state.wizard.displayMode, ["serial", "graphical"], "setWizardValue('displayMode', this.value)")}
       </div>
-      ${state.wizard.displayMode === "graphical" ? `<p class="section-footer">Graphical mode is v86's VGA canvas with mouse, touch, and keyboard routed to the emulated PC.</p>` : ""}
+      ${state.wizard.displayMode === "graphical" ? `<p class="section-footer">Graphical mode uses VGA on PC and virtio-gpu on ARM. ARM kernels need the virtio-gpu driver; otherwise use the serial console.</p>` : ""}
     </section>
     <section class="section">
       <p class="section-title">Memory</p>
@@ -750,7 +800,7 @@ function wizardHardware() {
         <div class="row">
           <span class="row-title">RAM</span>
           <span class="range-row">
-            <input type="range" min="128" max="2048" step="128" value="${state.wizard.memory}" oninput="setWizardSilent('memory', Number(this.value)); this.nextElementSibling.value = this.value">
+            <input type="range" min="128" max="1536" step="128" value="${state.wizard.memory}" oninput="setWizardSilent('memory', Number(this.value)); this.nextElementSibling.value = this.value">
             <input type="number" value="${state.wizard.memory}" oninput="setWizardSilent('memory', Number(this.value))">
           </span>
         </div>
@@ -791,13 +841,36 @@ function wizardStorage() {
       <div class="group">
         <div class="row">
           <span class="row-title">Expected Disk Size</span>
-          <input type="number" min="1" value="${state.wizard.storage}" oninput="setWizardSilent('storage', Number(this.value))">
+          <input type="number" min="0.0625" step="0.25" value="${state.wizard.storage}" oninput="setWizardSilent('storage', Number(this.value))" aria-label="Blank disk size in GiB">
           <span class="row-value">GiB</span>
         </div>
+        ${navRow(state.wizard.fileRefs.disk ? "Disk Attached" : "Create Blank Disk", "sf:externaldrive", "icon-blue", "createBlankDisk('wizard')", state.wizard.fileRefs.disk?.name || "Optional")}
       </div>
-      <p class="section-footer">The browser cannot create sparse VM disks yet. This size is saved in the config and reflected in the launch plan.</p>
+      <p class="section-footer">Create a writable disk in private browser storage, or use an imported image. RAW disk writes are saved automatically on supported browsers. Your browser’s available storage sets the limit.</p>
     </section>
   `;
+}
+
+async function createBlankDisk(scope) {
+  if (busyOperation) return;
+  if (!UTMStorage.supportsOPFS()) { showToast("This browser cannot create writable disks. Import a disk image and save snapshots instead."); return; }
+  const target = scope === "wizard" ? state.wizard : state.draft;
+  const size = Math.round(Number(target.storage || 2) * 1024 ** 3 / 512) * 512;
+  if (!Number.isSafeInteger(size) || size < 16 * 1024 ** 2) { showToast("Choose a disk size of at least 16 MiB."); return; }
+  const id = storageId("disk");
+  const url = `opfs:utm-web/disks/${id}.img`;
+  setBusy("Creating your disk…");
+  try {
+    const info = await UTMStorage.estimate();
+    if (info.quota && size > info.quota - (info.usage || 0)) throw new Error("The disk is larger than the browser’s available storage.");
+    await UTMStorage.allocate(url, size);
+    const record = { id, role: "disk", name: "Blank Disk.img", size, storage: "opfs", url, savedAt: Date.now() };
+    await putRecord(record);
+    target.fileRefs.disk = fileMeta(record);
+    refreshStorageInfo();
+    render();
+  } catch (error) { await UTMStorage.remove(url).catch(() => {}); showToast(`Could not create disk: ${error.message}`); }
+  finally { setBusy(""); }
 }
 
 function wizardSummary() {
@@ -812,7 +885,7 @@ function wizardSummary() {
     <section class="section">
       <p class="section-title">System</p>
       <div class="group">
-        ${row("Engine", "v86")}
+        ${row("Engine", "v64")}
         ${row("Architecture", preview.architecture)}
         ${row("Machine", preview.machine)}
         ${row("Display", displayLabel(preview))}
@@ -830,7 +903,7 @@ function wizardSummary() {
       </div>
     </section>
     <section class="section">
-      <p class="section-title">v86</p>
+      <p class="section-title">v64</p>
       ${codeBlock(config)}
     </section>
   `;
@@ -844,6 +917,16 @@ function chooseMachine(index) {
   state.wizard.memory = machine.memory;
   state.wizard.cpu = machine.cpu;
   state.wizard.storage = machine.storage;
+  state.wizard.firmware = "seabios";
+  if (UTMRuntime.isARM(state.wizard)) {
+    state.wizard.bootType = "kernel";
+    state.wizard.displayMode = "serial";
+    state.wizard.bootArguments = "console=ttyAMA0";
+  } else {
+    state.wizard.bootType = "iso";
+    state.wizard.displayMode = "graphical";
+    state.wizard.bootArguments = "";
+  }
   render();
 }
 
@@ -864,9 +947,14 @@ function stepWizard(key, delta) {
 async function pickWizardFile(key, input) {
   const file = input.files && input.files[0];
   if (!file) return;
-  state.wizard.fileRefs[key] = await importFileToStore(file, key);
+  setBusy("Importing media…");
+  const previous = state.wizard.fileRefs[key];
+  try { state.wizard.fileRefs[key] = await importFileToStore(file, key); }
+  catch (error) { showToast(`Could not store media: ${error.message}`); return; }
+  finally { setBusy(""); }
   transientFiles.set(`wizard:${key}`, file);
   render();
+  if (previous) await removeStoredFile(previous).catch(console.warn);
 }
 
 function wizardNextPage(page = state.route.page) {
@@ -888,13 +976,17 @@ function wizardBack() {
   setRoute({ name: "wizard", page: previous });
 }
 
-function cancelWizard() {
+async function cancelWizard() {
+  if (busyOperation) return;
+  const files = Object.values(state.wizard?.fileRefs || {});
   state.wizard = null;
   setRoute({ name: "library" });
+  for (const file of files) await removeStoredFile(file).catch(console.warn);
 }
 
 function saveWizard() {
-  const vm = wizardToVM(`vm-${Date.now()}`);
+  const vm = wizardToVM(storageId("vm"));
+  try { UTMRuntime.validate(vm); } catch (error) { showToast(error.message); return; }
   for (const key of Object.keys(vm.fileRefs)) {
     const file = transientFiles.get(`wizard:${key}`);
     if (file) transientFiles.set(`${vm.id}:${key}`, file);
@@ -914,10 +1006,11 @@ function wizardToVM(id) {
     os: "Linux",
     status: "Stopped",
     icon: assets.linux,
-    notes: "Local browser VM config generated from UTM-Web. Import boot media into browser storage, then run it with the vendored v86 engine.",
+    notes: "Local browser VM config generated from UTM-Web. Import boot media into browser storage, then run it with the vendored v64 engine.",
     runtime: w.runtime,
     architecture: w.architecture,
     machine: w.target,
+    firmware: w.firmware,
     memory: w.memory,
     cpu: w.cpu,
     storage: w.storage,
@@ -926,7 +1019,7 @@ function wizardToVM(id) {
     bootType: w.bootType,
     bootArguments: w.bootArguments,
     fileRefs: structuredClone(w.fileRefs),
-    network: "none"
+    network: "auto"
   };
 }
 
@@ -944,7 +1037,9 @@ function fileMeta(file) {
     size: file.size,
     type: file.type || "application/octet-stream",
     lastModified: file.lastModified || Date.now(),
-    savedAt: file.savedAt || Date.now()
+    savedAt: file.savedAt || Date.now(),
+    storage: file.storage || "indexeddb",
+    url: file.url
   };
 }
 
@@ -953,6 +1048,11 @@ function openSettings() {
   state.editingId = vm.id;
   state.draft = structuredClone(vm);
   setRoute({ name: "settings" });
+}
+
+function editVM(id) {
+  state.selectedId = id;
+  openSettings();
 }
 
 function renderSettingsRoot() {
@@ -969,7 +1069,8 @@ function renderSettingsRoot() {
         ${navRow("System", "sf:cpu", "icon-orange", "openSettingsPane('System')")}
         ${navRow("Display", "sf:rectangle.on.rectangle", "icon-blue", "openSettingsPane('Display')")}
         ${navRow("Boot", "sf:externaldrive", "icon-yellow", "openSettingsPane('Boot')")}
-        ${navRow("v86", "sf:shippingbox", "icon-purple", "openSettingsPane('v86')")}
+        ${navRow("Network", "sf:network.slash", "icon-green", "openSettingsPane('Network')")}
+        ${navRow("v64", "sf:shippingbox", "icon-purple", "openSettingsPane('v64')")}
       </div>
     </section>
     <section class="section">
@@ -999,6 +1100,14 @@ function renderSettingsPane() {
 
 function settingsPaneContent(pane) {
   const vm = state.draft;
+  if (pane === "Network") {
+    return `<section class="section">
+      <p class="section-title">Internet Access</p>
+      <div class="group">${selectRow("Mode", vm.network || "none", ["auto", "none", "browser", "local"], "setDraft('network', this.value); render()")}</div>
+      <p class="section-footer">Auto uses local Ethernet NAT for TCP, UDP, DNS and guest HTTPS when the local server and QEMU are available. On GitHub Pages it uses limited browser HTTP. None turns networking off. The guest needs a virtio-net driver and DHCP.</p>
+    </section><section class="section"><div class="group">${row("This Session", networkLabel(vm))}</div>
+      <p class="section-footer">Run <code>node scripts/serve-local.mjs</code> with QEMU installed. Add <code>--lan</code> to open the site from a PC or phone on your network. Each visiting browser runs its own VM; the server provides files and networking. HTTP LAN addresses support the VM, but OPFS, offline installation and some browser features require a trusted HTTPS origin. NAT does not provide Wi-Fi radio passthrough; incoming services need port forwarding. Remove an old snapshot before adding a network card.</p></section>`;
+  }
   if (pane === "Information") {
     return `
       <section class="section">
@@ -1016,8 +1125,9 @@ function settingsPaneContent(pane) {
       <section class="section">
         <p class="section-title">Hardware</p>
         <div class="group">
-          ${selectRow("Architecture", vm.architecture, ["x86"], "setDraft('architecture', this.value)")}
-          ${selectRow("Machine", vm.machine, ["pc"], "setDraft('machine', this.value)")}
+          ${selectRow("Architecture", vm.architecture, UTMRuntime.architectures, "setDraftArchitecture(this.value)")}
+          ${selectRow("Machine", vm.machine, UTMRuntime.machineTypes(vm), "setDraft('machine', this.value)")}
+          ${vm.architecture === "x86_64" ? selectRow("Firmware", vm.firmware || "seabios", ["seabios", "uefi"], "setDraft('firmware', this.value)") : ""}
         </div>
       </section>
       <section class="section">
@@ -1026,7 +1136,7 @@ function settingsPaneContent(pane) {
           <div class="row">
             <span class="row-title">RAM</span>
             <span class="range-row">
-              <input type="range" min="128" max="2048" step="128" value="${vm.memory}" oninput="setDraft('memory', Number(this.value)); this.nextElementSibling.value = this.value">
+              <input type="range" min="128" max="1536" step="128" value="${vm.memory}" oninput="setDraft('memory', Number(this.value)); this.nextElementSibling.value = this.value">
               <input type="number" value="${vm.memory}" oninput="setDraft('memory', Number(this.value))">
             </span>
           </div>
@@ -1045,7 +1155,7 @@ function settingsPaneContent(pane) {
         <div class="group">
           ${selectRow("Mode", vm.displayMode || "serial", ["serial", "graphical"], "setDraft('displayMode', this.value); render()")}
         </div>
-        ${vm.displayMode === "graphical" ? `<p class="section-footer">Graphical mode uses v86's browser screen adapter. Tap the display to focus keyboard and pointer input.</p>` : ""}
+        ${vm.displayMode === "graphical" ? `<p class="section-footer">Graphical mode uses v64's browser screen adapter. Tap the display to focus keyboard and pointer input.</p>` : ""}
       </section>
       <section class="section">
         <p class="section-title">Input</p>
@@ -1071,7 +1181,7 @@ function settingsPaneContent(pane) {
   if (pane === "Boot") {
     return `
       <section class="section">
-        <div class="group">${selectRow("Boot Type", vm.bootType, ["iso", "disk", "floppy", "kernel"], "setDraft('bootType', this.value); render()")}</div>
+        <div class="group">${selectRow("Boot Type", vm.bootType, UTMRuntime.bootTypes(vm), "setDraft('bootType', this.value); render()")}</div>
       </section>
         ${vm.bootType === "iso" ? `
           <section class="section">
@@ -1096,7 +1206,7 @@ function settingsPaneContent(pane) {
         ` : ""}
         <section class="section">
           <p class="section-title">${vm.bootType === "iso" ? "Writable Disk" : "Disk"}</p>
-          <div class="group">${fileRow("Disk Image", "disk", "draft")}</div>
+          <div class="group">${fileRow("Disk Image", "disk", "draft")}${fileRow("Second Disk", "disk2", "draft")}</div>
           ${vm.bootType === "iso" ? `<p class="section-footer">Optional, but needed if you want the guest to install or save changes to a disk image.</p>` : ""}
         </section>
       <section class="section">
@@ -1105,7 +1215,7 @@ function settingsPaneContent(pane) {
       </section>
     `;
   }
-  if (pane === "v86") {
+  if (pane === "v64") {
     const config = formatV86Config(vm);
     return `
       <section class="section">
@@ -1115,9 +1225,12 @@ function settingsPaneContent(pane) {
       <section class="section">
         <p class="section-title">Save State</p>
         <div class="group">
+          ${toggleRow("Save When Stopping", vm.saveOnStop !== false, "setDraft('saveOnStop', this.checked)")}
           ${vm.fileRefs?.state ? row("State", `${vm.fileRefs.state.name} · ${formatBytes(vm.fileRefs.state.size)}`) : row("State", "None saved")}
           ${fileRow("Restore State", "state", "draft")}
+          ${vm.fileRefs?.state ? navRow("Remove Restore State", "sf:trash", "icon-red", "removeDraftState()") : ""}
         </div>
+        <p class="section-footer">Stopping saves your place in this browser. RAW disks in browser storage also keep guest writes as they happen. Use Download in the VM toolbar for a backup on your device.</p>
       </section>
       <section class="section">
         <div class="group">
@@ -1130,6 +1243,26 @@ function settingsPaneContent(pane) {
   return "";
 }
 
+function removeDraftState() {
+  delete state.draft.fileRefs.state;
+  transientFiles.delete(`${state.draft.id}:state`);
+  render();
+}
+
+function setDraftArchitecture(architecture) {
+  const vm = state.draft;
+  const wasARM = UTMRuntime.isARM(vm);
+  vm.architecture = architecture;
+  vm.machine = UTMRuntime.isARM(vm) ? "virt" : "i440fx";
+  vm.firmware = "seabios";
+  if (UTMRuntime.isARM(vm) !== wasARM) {
+    vm.bootType = UTMRuntime.isARM(vm) ? "kernel" : "iso";
+    vm.bootArguments = UTMRuntime.isARM(vm) ? "console=ttyAMA0" : "";
+    vm.displayMode = UTMRuntime.isARM(vm) ? "serial" : "graphical";
+  }
+  render();
+}
+
 function setDraft(key, value) {
   state.draft[key] = value;
 }
@@ -1138,13 +1271,20 @@ async function pickDraftFile(key, input) {
   const file = input.files && input.files[0];
   if (!file) return;
   state.draft.fileRefs = state.draft.fileRefs || {};
-  state.draft.fileRefs[key] = await importFileToStore(file, key);
+  setBusy("Importing media…");
+  const previous = state.draft.fileRefs[key];
+  try { state.draft.fileRefs[key] = await importFileToStore(file, key); }
+  catch (error) { showToast(`Could not store media: ${error.message}`); return; }
+  finally { setBusy(""); }
   transientFiles.set(`${state.draft.id}:${key}`, file);
   render();
+  if (previous) await removeStoredFile(previous).catch(console.warn);
 }
 
-function saveSettings() {
+async function saveSettings() {
+  try { UTMRuntime.validate(state.draft); } catch (error) { showToast(error.message); return; }
   const index = state.vms.findIndex(vm => vm.id === state.editingId);
+  const previous = Object.values(state.vms[index]?.fileRefs || {});
   if (index !== -1) {
     state.vms[index] = structuredClone(state.draft);
     state.selectedId = state.draft.id;
@@ -1153,50 +1293,98 @@ function saveSettings() {
   state.draft = null;
   saveState();
   setRoute({ name: "detail", id: state.selectedId });
+  for (const ref of previous) await removeStoredFile(ref).catch(console.warn);
+  refreshStorageInfo();
 }
 
-function cancelSettings() {
+async function cancelSettings() {
+  if (busyOperation) return;
+  const files = Object.values(state.draft?.fileRefs || {});
   state.draft = null;
   setRoute({ name: "detail", id: state.selectedId });
+  for (const file of files) await removeStoredFile(file).catch(console.warn);
 }
 
 function deleteDraftVM() {
   if (!state.draft || state.vms.length <= 1) return;
+  state.actionSheet = { title: `Delete ${state.draft.name} and its unshared local files?`, actions: [["Delete VM", "confirmDeleteVM()"]] };
+  renderActionSheet();
+}
+
+async function confirmDeleteVM() {
+  if (!state.draft || state.vms.length <= 1) return;
+  const files = Object.values(state.draft.fileRefs || {});
   state.vms = state.vms.filter(vm => vm.id !== state.draft.id);
   state.selectedId = state.vms[0].id;
   state.draft = null;
   saveState();
   setRoute({ name: "library" });
+  for (const file of files) await removeStoredFile(file).catch(console.warn);
+  refreshStorageInfo();
 }
 
-function v86BootOrder(vm) {
-  if (vm.bootType === "disk") return v86Runtime.bootOrders.disk;
-  if (vm.bootType === "floppy") return v86Runtime.bootOrders.floppy;
-  return v86Runtime.bootOrders.cdrom;
+async function refreshStorageInfo() {
+  try {
+    storageInfo = await UTMStorage.estimate();
+    if (state.route.name === "storage") renderStorage();
+  } catch (error) { console.warn(error); }
+}
+
+function openStorage() {
+  setRoute({ name: "storage" });
+  refreshStorageInfo();
+}
+
+function renderStorage() {
+  renderNav("Browser Storage", navButton("&lsaquo; UTM", "setRoute({ name: 'library' })"), navButton("Refresh", "refreshStorageInfo()"));
+  const info = storageInfo || {};
+  const percent = info.quota ? Math.min(100, (info.usage || 0) / info.quota * 100) : 0;
+  $("view").innerHTML = `
+    <section class="section storage-intro">
+      ${iconMarkup("sf:externaldrive", "icon-purple")}
+      <h1>Made to stay local.</h1>
+      <p>Your VM files stay on this device, in this browser.</p>
+    </section>
+    <section class="section">
+      <div class="group storage-card">
+        ${row("Used", info.usage === undefined ? "Checking…" : formatBytes(info.usage))}
+        ${row("Available", info.quota ? formatBytes(Math.max(0, info.quota - (info.usage || 0))) : "Managed by your browser")}
+        <progress max="100" value="${percent}" aria-label="Browser storage usage"></progress>
+        ${row("Keep Storage", info.persisted ? "Enabled" : "Not granted")}
+        ${row("Writable Disks", info.opfs ? "Saved automatically" : "Saved with snapshots")}
+        ${navRow("Keep Storage on This Device", "sf:externaldrive", "icon-blue", "requestPersistentStorage()")}
+      </div>
+      <p class="section-footer">Capacity is shared by this website’s origin and can reach gigabytes. Keep Storage asks the browser to protect it from automatic cleanup. Clearing website data, private browsing, or removing the app can still remove VMs. Download backups you want to keep.</p>
+    </section>
+    <section class="section">
+      <p class="section-title">Your Machines</p>
+      <div class="group">${state.vms.map(vm => navRow(vm.name, vm.icon, "", `editVM('${vm.id}')`, formatBytes(Object.values(vm.fileRefs || {}).reduce((sum, ref) => sum + (ref.storage === "temporary" ? 0 : Number(ref.size || 0)), 0)))).join("")}</div>
+    </section>`;
+}
+
+async function requestPersistentStorage() {
+  if (!navigator.storage?.persist) { showToast("This browser manages storage automatically. Download backups to keep a copy on your device."); return; }
+  const granted = await navigator.storage.persist();
+  await refreshStorageInfo();
+  showToast(granted ? "Storage is protected from automatic cleanup." : "The browser has not granted permanent storage yet. Your files are saved, but keep downloaded backups too.");
+}
+
+function setBusy(message) {
+  busyOperation = !!message;
+  document.querySelector(".operation-banner")?.remove();
+  document.querySelectorAll(".floating-toolbar button").forEach(button => { button.disabled = busyOperation; });
+  if (!message) return;
+  const banner = document.createElement("div");
+  banner.className = "operation-banner";
+  banner.setAttribute("role", "status");
+  banner.innerHTML = `<span class="progress-spinner"></span><span>${escapeHtml(message)}</span>`;
+  $("app").appendChild(banner);
 }
 
 function v86ConfigPreview(vm) {
-  const config = {
-    wasm_path: v86Runtime.wasm,
-    bios: v86Runtime.bios,
-    vga_bios: v86Runtime.vgaBios,
-    memory_size: `${vm.memory || 1024} MiB`,
-    vga_memory_size: `${vm.vgaMemory || 32} MiB`,
-    boot_order: `0x${v86BootOrder(vm).toString(16)}`,
-    autostart: true,
-    disable_speaker: true,
-    network: "disabled"
-  };
-  if (vm.bootType === "iso") config.cdrom = vm.fileRefs?.cdrom?.name || "choose an ISO";
-  if (vm.bootType === "disk" || vm.fileRefs?.disk) config.hda = vm.fileRefs?.disk?.name || "choose a raw disk";
-  if (vm.bootType === "floppy") config.fda = vm.fileRefs?.floppy?.name || "choose a floppy image";
-  if (vm.bootType === "kernel") {
-    config.bzimage = vm.fileRefs?.kernel?.name || "choose a bzImage";
-    if (vm.fileRefs?.initrd) config.initrd = vm.fileRefs.initrd.name;
-    if (vm.bootArguments) config.cmdline = vm.bootArguments;
-  }
-  if (vm.fileRefs?.state) config.initial_state = vm.fileRefs.state.name;
-  return config;
+  const files = Object.fromEntries(Object.entries(vm.fileRefs || {}).map(([key, ref]) => [key, { file: ref.name }]));
+  try { return UTMRuntime.options(vm, files); }
+  catch (error) { return { error: error.message, architecture: vm.architecture }; }
 }
 
 function formatV86Config(vm) {
@@ -1204,7 +1392,7 @@ function formatV86Config(vm) {
 }
 
 function buildV86Plan(vm) {
-  return { executable: "v86", args: [formatV86Config(vm)] };
+  return { executable: `v64 · ${vm.architecture}`, args: [formatV86Config(vm)] };
 }
 
 async function startRuntime(id) {
@@ -1213,7 +1401,7 @@ async function startRuntime(id) {
   if (!session || session.vmId !== id) return;
   appendOutput(`UTM Web ${vm.name}`);
   appendOutput(`Runtime: ${runtimeLabel(vm)}`);
-  appendOutput("Engine: v86");
+  appendOutput("Engine: v64");
   appendOutput(formatV86Config(vm));
   appendOutput("");
   if (!("WebAssembly" in window)) {
@@ -1230,19 +1418,19 @@ async function startRuntime(id) {
     return;
   }
   const localRuntime = await resourceExists(v86Runtime.module);
+  if (runtimeSession !== session) return;
   if (!localRuntime) {
-    failRuntime(vm, `Local v86 runtime not found at ${v86Runtime.module}.`);
+    failRuntime(vm, `Local v64 runtime not found at ${v86Runtime.module}.`);
     return;
   }
   try {
-    session.status = "running";
-    vm.status = "Running";
-    saveState();
-    appendOutput("Local v86 runtime found in repo.");
-    appendOutput("Preparing v86 machine...");
-    await startLocalV86(vm);
+    await configureNetwork();
+    if (runtimeSession !== session) return;
+    appendOutput("Local v64 runtime found in repo.");
+    appendOutput("Preparing v64 machine...");
+    await startLocalV86(vm, session);
   } catch (error) {
-    failRuntime(vm, error.message || String(error));
+    if (runtimeSession === session) failRuntime(vm, error.message || String(error));
   }
 }
 
@@ -1307,7 +1495,8 @@ function enableSerialModemLines(emulator = runtimeSession?.emulator) {
 function appendTerminalBytes(bytes) {
   if (!runtimeSession) return;
   runtimeSession.serialBytes = (runtimeSession.serialBytes || 0) + bytes.length;
-  const text = terminalDecoder.decode(new Uint8Array(bytes));
+  const decoder = runtimeSession.terminalDecoder ||= new TextDecoder();
+  const text = decoder.decode(new Uint8Array(bytes), { stream: true });
   const cleaned = text
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
     .replace(/\r/g, "\n");
@@ -1346,6 +1535,12 @@ function trimRuntimeOutput() {
 function failRuntime(vm, message) {
   if (runtimeSession) {
     runtimeSession.status = "stopped";
+    clearTimeout(runtimeSession.startTimer);
+    const emulator = runtimeSession.emulator;
+    if (emulator) {
+      runtimeSession.cancelled = true;
+      Promise.resolve(emulator.destroy()).catch(console.warn);
+    }
     appendOutput(`Stopped: ${message}`);
   }
   vm.status = "Stopped";
@@ -1367,89 +1562,83 @@ async function resourceExists(url) {
   }
 }
 
-async function startLocalV86(vm) {
+async function startLocalV86(vm, session) {
   const payloads = {};
-  for (const key of Object.keys(vm.fileRefs || {})) {
-    const bytes = await readStoredBytes(vm.fileRefs[key], `${vm.id}:${key}`);
-    if (bytes) payloads[key] = bytes;
+  for (const [key, ref] of Object.entries(vm.fileRefs || {})) {
+    if (key !== "state" && !requiredFileKeys(vm).includes(key) && !["disk", "disk2"].includes(key) && !(vm.bootType === "kernel" && key === "initrd")) continue;
+    if (["disk", "disk2"].includes(key) && ref.storage === "opfs" && diskFormat(ref) === "raw") {
+      payloads[key] = { url: ref.url, size: ref.size, disk_option: "read_write" };
+      continue;
+    }
+    const file = await storedFile(ref, `${vm.id}:${key}`);
+    if (runtimeSession !== session) return;
+    if (!file) throw new Error(`Stored ${fileTitle(key)} is missing. Re-import the file.`);
+    // v64 reads File/Blob descriptors on demand, avoiding a full ISO/disk copy in UI memory.
+    payloads[key] = key === "state" ? file : { buffer: file, async: true };
   }
-  const missingRuntimeFiles = requiredFileKeys(vm).filter(key => !payloads[key]);
-  if (missingRuntimeFiles.length) {
-    throw new Error(`Stored ${missingRuntimeFiles.map(fileTitle).join(", ")} data is missing. Re-import the file.`);
-  }
-  if (runtimeSession) {
-    runtimeSession.diskRef = vm.fileRefs?.disk || null;
-  }
+  const missing = requiredFileKeys(vm).filter(key => !payloads[key]);
+  if (missing.length) throw new Error(`Missing ${missing.map(fileTitle).join(", ")}.`);
   const screen = $("v86Screen");
-  if (!screen) throw new Error("v86 screen is not mounted.");
   const { V86 } = await import(runtimeUrl(v86Runtime.module));
-  const options = {
-    wasm_path: runtimeUrl(v86Runtime.wasm),
-    memory_size: Math.max(16, Number(vm.memory || 1024)) * 1024 * 1024,
-    vga_memory_size: Math.max(1, Number(vm.vgaMemory || 32)) * 1024 * 1024,
-    screen: {
-      container: screen,
-      use_graphical_text: false
-    },
-    bios: { url: runtimeUrl(v86Runtime.bios) },
-    vga_bios: { url: runtimeUrl(v86Runtime.vgaBios) },
-    boot_order: v86BootOrder(vm),
-    autostart: true,
-    disable_speaker: true,
-    disable_keyboard: false,
-    disable_mouse: vm.displayMode === "serial",
-    net_device: undefined,
-    filesystem: {},
-    preserve_mac_from_state_image: true
-  };
-  if (payloads.cdrom) options.cdrom = { buffer: uint8ToArrayBuffer(payloads.cdrom) };
-  if (payloads.disk) options.hda = { buffer: uint8ToArrayBuffer(payloads.disk) };
-  if (payloads.floppy) options.fda = { buffer: uint8ToArrayBuffer(payloads.floppy) };
-  if (payloads.kernel) options.bzimage = { buffer: uint8ToArrayBuffer(payloads.kernel) };
-  if (payloads.initrd) options.initrd = { buffer: uint8ToArrayBuffer(payloads.initrd) };
-  if (payloads.state) options.initial_state = { buffer: uint8ToArrayBuffer(payloads.state) };
-  if (vm.bootArguments) options.cmdline = vm.bootArguments;
+  if (runtimeSession !== session) return;
+  const options = UTMRuntime.options(vm, payloads, runtimeUrl);
+  const restoreFile = payloads.state;
+  delete options.initial_state;
+  options.autostart = !restoreFile;
+  options.screen = { container: screen, use_graphical_text: false };
+  options.disable_mouse = vm.displayMode === "serial";
+  options.disable_keyboard = vm.displayMode === "serial";
   const emulator = new V86(options);
   window.emulator = emulator;
-  window.__utmWebRuntime = runtimeSession;
-  runtimeSession.emulator = emulator;
-  runtimeSession.module = emulator;
-  runtimeSession.keyboardReady = emulator.keyboard_adapter ? "yes" : "no";
-  debugLog(`v86 constructor ok; boot=${vm.bootType}; memory=${vm.memory}MiB; vga=${vm.vgaMemory || 8}MiB`);
-  debugLog(`keyboard adapter ${runtimeSession.keyboardReady}`);
-  emulator.add_listener("download-progress", progress => {
-    if (progress?.total) {
-      appendOutput(`Downloading ${progress.file_name || "runtime"}: ${progress.loaded}/${progress.total}`);
-      debugLog(`download ${progress.file_name || "runtime"} ${progress.loaded}/${progress.total}`);
-    }
+  window.__utmWebRuntime = session;
+  session.emulator = emulator;
+  session.diskRef = vm.fileRefs.disk;
+  session.screenElement = screen;
+  session.keyboardReady = emulator.keyboard_adapter ? "yes" : "no";
+  debugLog(`v64: ${vm.architecture}/${vm.machine}; ${vm.cpu} core(s); ${vm.memory} MiB`);
+  session.startTimer = setTimeout(() => {
+    if (runtimeSession === session && session.status === "starting") failRuntime(vm, "Runtime initialization timed out. Check the runtime files and browser console.");
+  }, 60000);
+  const listen = (name, fn) => emulator.add_listener(name, value => {
+    if (runtimeSession === session && !session.cancelled) fn(value);
   });
-  emulator.add_listener("emulator-ready", () => {
-    runtimeSession.status = "running";
-    runtimeSession.keyboardReady = emulator.keyboard_adapter ? "yes" : "no";
-    enableSerialModemLines(emulator);
-    appendOutput("v86 ready.");
-    debugLog(`event emulator-ready; keyboard adapter ${runtimeSession.keyboardReady}`);
-    renderDisplay();
+  listen("emulator-error", error => failRuntime(vm, error?.message || String(error)));
+  listen("download-error", error => failRuntime(vm, `Could not load ${error?.file_name || "runtime media"}. Check that all vendor files were deployed.`));
+  listen("emulator-ready", async () => {
+    try {
+      if (restoreFile) {
+        appendOutput("Restoring your saved session…");
+        await emulator.restore_state_stream(restoreFile);
+        if (runtimeSession !== session || session.cancelled) return;
+        emulator.run();
+      }
+      clearTimeout(session.startTimer);
+      session.status = "running";
+      vm.status = "Running";
+      saveState();
+      if (!UTMRuntime.isARM(vm)) enableSerialModemLines(emulator);
+      appendOutput(`v64 ready · ${vm.architecture} · ${vm.cpu} core(s).`);
+      debugLog("event emulator-ready");
+      renderDisplay();
+    } catch (error) { if (runtimeSession === session) failRuntime(vm, error.message || String(error)); }
   });
-  emulator.add_listener("emulator-stopped", () => {
+  listen("emulator-stopped", () => {
     debugLog("event emulator-stopped");
-    appendOutput("v86 stopped.");
   });
-  emulator.add_listener("screen-set-size", size => {
-    const [width, height, bpp] = size || [];
-    runtimeSession.screenSize = `${width || 0}x${height || 0}x${bpp || 0}`;
-    debugLog(`event screen-set-size ${runtimeSession.screenSize}`);
+  listen("screen-set-size", size => {
+    session.screenSize = (size || []).join("x");
+    updateDebugPanel();
   });
-  emulator.add_listener("screen-put-char", args => {
-    captureScreenChar(args);
-  });
-  emulator.add_listener("mouse-enable", enabled => {
-    runtimeSession.mouseEnabled = enabled ? "on" : "off";
-    debugLog(`event mouse-enable ${runtimeSession.mouseEnabled}`);
-  });
-  emulator.add_listener("serial0-output-byte", byte => {
-    appendTerminalBytes([byte]);
-    if ((runtimeSession.serialBytes || 0) % 256 === 0) updateDebugPanel();
+  listen("screen-put-char", captureScreenChar);
+  listen("mouse-enable", enabled => { session.mouseEnabled = enabled ? "on" : "off"; });
+  listen("serial0-output-byte", byte => {
+    (session.pendingSerial ||= []).push(byte);
+    if (!session.serialTimer) session.serialTimer = setTimeout(() => {
+      session.serialTimer = null;
+      if (runtimeSession !== session || session.cancelled) return;
+      appendTerminalBytes(session.pendingSerial.splice(0));
+      updateDebugPanel();
+    }, 32);
   });
 }
 
@@ -1485,12 +1674,19 @@ function renderDisplay() {
     output: ["No active runtime session."],
     diskRef: null
   };
+  renderNav(vm.name, navButton("Stop", "stopDisplay()"), "");
+  if (session.screenElement && $("v86Screen") === session.screenElement) {
+    document.querySelector(".runtime-chip").textContent = `${session.status} · v64 · ${vm.architecture}`;
+    $("debugMount").innerHTML = session.debugVisible ? renderDebugPanel(session) : "";
+    updateDebugPanel();
+    return;
+  }
   $("view").className = "view display-view";
   const plan = buildV86Plan(vm);
   const mode = vm.displayMode === "graphical" ? "graphical" : "serial";
   $("view").innerHTML = `
     <div class="display-surface ${mode}">
-      <div id="v86Screen" class="v86-screen" tabindex="0" aria-label="v86 display">
+      <div id="v86Screen" class="v86-screen" tabindex="0" aria-label="Virtual machine display">
         <div class="v86-text"></div>
         <canvas></canvas>
       </div>
@@ -1500,15 +1696,15 @@ function renderDisplay() {
         <button type="submit">RET</button>
       </form>
       <div class="floating-toolbar">
-        <button onclick="saveActiveDisk()">SAVE</button>
-        <button onclick="sendSerialText('\r')">ENT</button>
-        <button onclick="toggleDebugPanel()">DBG</button>
-        <button onclick="restartDisplay()">RST</button>
-        <button onclick="copyV86Config('${vm.id}')">CFG</button>
-        <button onclick="stopDisplay()">X</button>
+        <button onclick="saveActiveDisk()" aria-label="Save VM to browser">Save</button>
+        <button onclick="showVMDownloads()" aria-label="Download VM files">Files</button>
+        <button onclick="sendRuntimeEnter()">Enter</button>
+        <button onclick="toggleDebugPanel()">Debug</button>
+        <button onclick="restartDisplay()">Restart</button>
+        <button onclick="stopDisplay()">Close</button>
       </div>
       <div class="runtime-chip">${escapeHtml(session.status)} · ${escapeHtml(plan.executable)}</div>
-      ${session.debugVisible ? renderDebugPanel(session) : ""}
+      <div id="debugMount">${session.debugVisible ? renderDebugPanel(session) : ""}</div>
     </div>
   `;
   setupV86Input($("v86Screen"));
@@ -1522,7 +1718,7 @@ function renderDebugPanel(session) {
   return `
     <section class="debug-panel">
       <div class="debug-head">
-        <strong>v86 Debug</strong>
+        <strong>v64 Debug</strong>
         <button onclick="toggleDebugPanel()">Close</button>
       </div>
       <p id="debugStatus" class="debug-status">${escapeHtml(debugStatusText(session))}</p>
@@ -1654,19 +1850,23 @@ function sendSerialInput(event) {
 function sendSerialText(text) {
   const emulator = runtimeSession?.emulator;
   if (!emulator) {
-    appendOutput("Serial input skipped: v86 is not ready yet.");
+    appendOutput("Serial input skipped: v64 is not ready yet.");
     return;
   }
   runtimeSession.inputCount = (runtimeSession.inputCount || 0) + 1;
   emulator.serial0_send(text);
-  sendKeyboardInput(emulator, text);
-  debugLog(`input both ${debugTextLabel(text)}`);
+  debugLog(`serial input ${debugTextLabel(text)}`);
+}
+
+function sendRuntimeEnter() {
+  if (vmById(runtimeSession?.vmId)?.displayMode === "graphical") sendKeyboardEnter();
+  else sendSerialText("\r");
 }
 
 function sendSerialOnly(text) {
   const emulator = runtimeSession?.emulator;
   if (!emulator) {
-    appendOutput("Serial input skipped: v86 is not ready yet.");
+    appendOutput("Serial input skipped: v64 is not ready yet.");
     return;
   }
   runtimeSession.inputCount = (runtimeSession.inputCount || 0) + 1;
@@ -1677,7 +1877,7 @@ function sendSerialOnly(text) {
 function sendKeyboardEnter() {
   const emulator = runtimeSession?.emulator;
   if (!emulator) {
-    appendOutput("Keyboard input skipped: v86 is not ready yet.");
+    appendOutput("Keyboard input skipped: v64 is not ready yet.");
     return;
   }
   runtimeSession.inputCount = (runtimeSession.inputCount || 0) + 1;
@@ -1688,7 +1888,7 @@ function sendKeyboardEnter() {
 function sendScancodeEnter() {
   const emulator = runtimeSession?.emulator;
   if (!emulator) {
-    appendOutput("Scancode input skipped: v86 is not ready yet.");
+    appendOutput("Scancode input skipped: v64 is not ready yet.");
     return;
   }
   runtimeSession.inputCount = (runtimeSession.inputCount || 0) + 1;
@@ -1724,26 +1924,44 @@ function debugTextLabel(text) {
     .replaceAll("\x7f", "\\x7f"));
 }
 
-async function stopDisplay() {
+async function stopDisplay(skipSave = false) {
+  if (busyOperation) return;
   const vm = vmById(state.route.id);
   const session = runtimeSession;
+  if (!skipSave && session?.status === "running" && vm.saveOnStop !== false) {
+    if (!await saveActiveDisk()) {
+      state.actionSheet = { title: "Could not save in browser storage. Download a backup before closing.", actions: [
+        ["Download VM Snapshot", "downloadSnapshot()"],
+        ["Close Without Saving", "hideSheet(); stopDisplay(true)"]
+      ] };
+      renderActionSheet();
+      return false;
+    }
+  }
+  if (session) { session.cancelled = true; clearTimeout(session.startTimer); clearTimeout(session.serialTimer); }
+  runtimeSession = null;
   if (session?.emulator) {
+    setBusy("Closing your VM…");
     try {
       await session.emulator.stop();
       await session.emulator.destroy();
     } catch (error) {
       console.warn(error);
-    }
+    } finally { setBusy(""); }
   }
   vm.status = "Stopped";
   runtimeSession = null;
+  window.__utmWebRuntime = null;
+  window.emulator = null;
   saveState();
   setRoute({ name: "detail", id: vm.id });
+  refreshStorageInfo();
+  return true;
 }
 
 async function restartDisplay() {
   const id = state.route.id;
-  await stopDisplay();
+  if (!await stopDisplay()) return;
   runVM(id);
 }
 
@@ -1752,34 +1970,149 @@ function openURL(url) {
 }
 
 async function saveActiveDisk() {
-  if (!runtimeSession?.emulator) {
-    appendOutput("Save skipped: v86 is not ready yet.");
-    return;
+  if (busyOperation) return false;
+  if (!runtimeSession?.emulator || runtimeSession.status !== "running") {
+    appendOutput("Save skipped: v64 is not ready yet.");
+    return false;
   }
+  const session = runtimeSession;
+  const vm = vmById(session.vmId);
+  let path;
+  setBusy("Saving your VM…");
   try {
-    const bytes = await runtimeSession.emulator.save_state();
-    const vm = vmById(runtimeSession.vmId);
     const safeName = vm.name.replace(/[^A-Za-z0-9._-]+/g, "-") || "utm-web";
-    const updated = await putBytesToStore(`${safeName}.v86state.bin`, "state", bytes);
+    let updated;
+    if (UTMStorage.supportsOPFS()) {
+      const id = storageId("state");
+      path = `opfs:utm-web/states/${id}.bin`;
+      const file = await UTMStorage.write(path, write => session.emulator.save_state_stream(write));
+      const record = { id, name: `${safeName}.v64state.bin`, size: file.size, role: "state", storage: "opfs", url: path, savedAt: Date.now() };
+      await putRecord(record);
+      updated = fileMeta(record);
+    } else {
+      const chunks = [];
+      await session.emulator.save_state_stream(chunk => { chunks.push(chunk.slice()); });
+      updated = await putBytesToStore(`${safeName}.v64state.bin`, "state", new Blob(chunks));
+    }
+    updated.runtime = "local-v64";
+    updated.machineConfig = UTMRuntime.signature(vm);
+    const previous = vm.fileRefs?.state;
     vm.fileRefs = vm.fileRefs || {};
     vm.fileRefs.state = updated;
     vm.status = "Saved";
     saveState();
-    appendOutput(`Saved v86 state (${formatBytes(updated.size)}) to browser storage.`);
+    if (previous) await removeStoredFile(previous).catch(console.warn);
+    appendOutput(`Saved v64 state (${formatBytes(updated.size)}) to browser storage.`);
+    refreshStorageInfo();
+    return true;
   } catch (error) {
+    if (path) await UTMStorage.remove(path).catch(() => {});
     appendOutput(`Save failed: ${error.message || error}`);
+    state.actionSheet = { title: "Browser storage could not save this VM. You can download it to your device.", actions: [["Download VM Snapshot", "downloadSnapshot()"]] };
+    renderActionSheet();
+    return false;
+  } finally { setBusy(""); }
+}
+
+function showVMDownloads() {
+  const vm = vmById(runtimeSession?.vmId);
+  state.actionSheet = { title: "Save a copy on your device", actions: [
+    ["Download VM Snapshot", "downloadSnapshot()"],
+    ...(vm.fileRefs?.disk ? [["Download Current Disk", "downloadRunningDisk()"]] : []),
+    ...(vm.fileRefs?.disk ? [["Save Disk Copy in Browser", "hideSheet(); saveRunningDisk()"]] : []),
+    ["Download Launch Config", "exportConfig(); hideSheet()"]
+  ] };
+  renderActionSheet();
+}
+
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function downloadTarget(name) {
+  // Called directly from a tap: the picker keeps the user's activation.
+  if (window.showSaveFilePicker) {
+    const handle = await window.showSaveFilePicker({ suggestedName: name });
+    const writer = await handle.createWritable();
+    return { write: chunk => writer.write(chunk), finish: () => writer.close(), abort: () => writer.abort() };
   }
+  const chunks = [];
+  return {
+    write: chunk => { chunks.push(chunk.slice()); },
+    finish: () => downloadBlob(new Blob(chunks, { type: "application/octet-stream" }), name),
+    abort: async () => { chunks.length = 0; }
+  };
+}
+
+async function downloadRuntimeFile(kind) {
+  if (busyOperation || runtimeSession?.status !== "running") return;
+  const session = runtimeSession;
+  const vm = vmById(session.vmId);
+  const name = vm.name.replace(/[^A-Za-z0-9._-]+/g, "-") || "utm-web";
+  let target;
+  try {
+    target = await downloadTarget(`${name}.${kind === "state" ? "v64state.bin" : "qcow2"}`);
+    hideSheet();
+    setBusy(kind === "state" ? "Preparing snapshot download…" : "Preparing disk download…");
+    if (kind === "state") await session.emulator.save_state_stream(target.write);
+    else await session.emulator.export_disk_image(UTMRuntime.isARM(vm) ? "virtio_disk0" : "hda", { format: "qcow2", write: target.write });
+    await target.finish();
+    appendOutput("Download prepared. Keep the launch config and original boot media with your backup.");
+  } catch (error) {
+    if (target) await Promise.resolve(target.abort()).catch(() => {});
+    if (error.name !== "AbortError") showToast(`Download failed: ${error.message || error}`);
+  } finally { setBusy(""); }
+}
+
+function downloadSnapshot() { return downloadRuntimeFile("state"); }
+function downloadRunningDisk() { return downloadRuntimeFile("disk"); }
+
+async function saveRunningDisk() {
+  const session = runtimeSession;
+  if (busyOperation || session?.status !== "running" || !session.diskRef) return;
+  const vm = vmById(session.vmId);
+  const name = `${vm.name.replace(/[^A-Za-z0-9._-]+/g, "-")}.qcow2`;
+  setBusy("Saving disk copy…");
+  try {
+    const chunks = [];
+    await session.emulator.export_disk_image(UTMRuntime.isARM(vm) ? "virtio_disk0" : "hda", {
+      format: "qcow2", write: chunk => { chunks.push(chunk.slice()); }
+    });
+    const file = new File(chunks, name, { type: "application/octet-stream" });
+    const previous = vm.fileRefs.diskExport;
+    const ref = await importFileToStore(file, "diskExport");
+    if (ref.storage === "temporary") {
+      downloadBlob(file, name);
+      transientFiles.delete(ref.id);
+      appendOutput("Browser storage is full. The disk copy was prepared as a download instead.");
+      return;
+    }
+    vm.fileRefs.diskExport = ref;
+    saveState();
+    if (previous) await removeStoredFile(previous).catch(console.warn);
+    appendOutput("Saved a disk copy with guest writes. Download it from Attached Media after stopping.");
+  } catch (error) {
+    state.actionSheet = { title: "Not enough browser storage for the disk copy. Download it instead.", actions: [["Download Current Disk", "downloadRunningDisk()"]] };
+    renderActionSheet();
+  } finally { setBusy(""); }
 }
 
 async function copyV86Config(id = state.selectedId) {
   const vm = vmById(id);
   await navigator.clipboard.writeText(formatV86Config(vm));
-  showToast("v86 config copied");
+  showToast("v64 config copied");
 }
 
 async function copyDraftV86Config() {
   await navigator.clipboard.writeText(formatV86Config(state.draft));
-  showToast("v86 config copied");
+  showToast("v64 config copied");
 }
 
 function exportConfig(id = state.selectedId) {
@@ -1793,7 +2126,7 @@ function exportDraftConfig() {
 function downloadConfig(vm) {
   const payload = {
     format: "utm-web",
-    version: 1,
+    version: 2,
     vm,
     v86: v86ConfigPreview(vm)
   };
@@ -1815,20 +2148,11 @@ async function downloadAttachedFile(id, key) {
     showToast("No file attached");
     return;
   }
-  const bytes = await readStoredBytes(ref, `${vm.id}:${key}`);
-  if (!bytes) {
-    showToast("Stored file is missing");
-    return;
-  }
-  const blob = new Blob([bytes], { type: ref.type || "application/octet-stream" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = ref.name || `${key}.img`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  try {
+    const file = await storedFile(ref, `${vm.id}:${key}`);
+    if (!file) { showToast("Stored file is missing"); return; }
+    downloadBlob(file, ref.name || `${key}.img`);
+  } catch (error) { showToast(`Could not download file: ${error.message}`); }
 }
 
 function showToast(message) {
@@ -1841,11 +2165,12 @@ function showToast(message) {
 
 function showRuntimeSheet() {
   state.actionSheet = {
-    title: "v86 Runtime",
+    title: "v64 Runtime",
     actions: [
       ["Open Upstream Repository", `openURL('${v86Runtime.upstream}'); hideSheet()`],
       ["Enable Isolation Headers", "enableIsolation()"],
       ["Disable Isolation Headers", "disableIsolation()"],
+      ["Run Runtime Verification", "openURL('tests/browser.html'); hideSheet()"],
       ["Open Local Runtime Notes", `openURL('${v86Runtime.docs}'); hideSheet()`]
     ]
   };
@@ -1854,10 +2179,11 @@ function showRuntimeSheet() {
 
 function showImportConfigSheet() {
   state.actionSheet = {
-    title: "Import Config",
+    title: "Import a VM",
     custom: `
       <div class="sheet-import">
-        <input type="file" accept="application/json,.json,.utmweb" onchange="importConfig(this)">
+        <p>Import a UTM-Web launch configuration. Reattach its original boot media if it came from another browser.</p>
+        <label class="import-option">Choose Config<input type="file" accept="application/json,.json,.utmweb" onchange="importConfig(this)"></label>
       </div>
     `,
     actions: []
@@ -1871,8 +2197,11 @@ async function importConfig(input) {
   try {
     const text = await file.text();
     const parsed = JSON.parse(text);
-    const vm = parsed.vm || parsed;
-    vm.id = `vm-${Date.now()}`;
+    const source = parsed.vm || parsed;
+    const vm = migrateVM(source);
+    if (!vm) throw new Error("Unsupported VM config");
+    UTMRuntime.validate({ ...vm, fileRefs: { ...vm.fileRefs, state: undefined } });
+    vm.id = storageId("vm");
     vm.status = "Stopped";
     state.vms.push(vm);
     state.selectedId = vm.id;
@@ -1915,7 +2244,7 @@ async function disableIsolation() {
     return;
   }
   const registrations = await navigator.serviceWorker.getRegistrations();
-  await Promise.all(registrations.map(registration => registration.unregister()));
+  await Promise.all(registrations.filter(registration => new URL(registration.scope).pathname === new URL("./", window.location.href).pathname).map(registration => registration.unregister()));
   window.location.reload();
 }
 
@@ -1927,14 +2256,17 @@ async function ensureIsolation() {
   }
   if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
   await registerIsolationWorker();
-  if (!sessionStorage.getItem("utm-web-isolation-reload")) {
+  if (!navigator.serviceWorker.controller) {
+    await new Promise(resolve => navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
+  }
+  if (!crossOriginIsolated && !sessionStorage.getItem("utm-web-isolation-reload")) {
     sessionStorage.setItem("utm-web-isolation-reload", "1");
     window.location.reload();
   }
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v86-20260619-1", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261103-final", {
     updateViaCache: "none"
   });
 }
@@ -1963,3 +2295,18 @@ function renderActionSheet() {
 
 ensureIsolation().catch(error => console.warn(error));
 render();
+refreshStorageInfo();
+configureNetwork();
+
+window.addEventListener?.("storage", event => {
+  if (event.key !== "utm-web-state" || !event.newValue) return;
+  try {
+    const saved = JSON.parse(event.newValue);
+    if (!Array.isArray(saved.vms) || !saved.vms.length) return;
+    const active = runtimeSession ? vmById(runtimeSession.vmId) : null;
+    state.vms = saved.vms.map(vm => vm.id === active?.id ? active : migrateVM(vm)).filter(Boolean);
+    if (active && !state.vms.some(vm => vm.id === active.id)) state.vms.push(active);
+    if (!state.vms.some(vm => vm.id === state.selectedId)) state.selectedId = state.vms[0].id;
+    if (["library", "storage"].includes(state.route.name)) render();
+  } catch (error) { console.warn(error); }
+});

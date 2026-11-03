@@ -1,0 +1,29 @@
+{
+  "upstream": "https://github.com/speedyHKjournalist/v64",
+  "source_reference": "87d26deb9a77c2e98b4b684f39cc72ba9065d76a",
+  "binary_source": "https://v64-2ys.pages.dev/build/",
+  "retrieved": "2026-11-03",
+  "note": "Prebuilt runtime files downloaded from the upstream static demo. Its published index identifies build_commit and build_version. SHA-256 pins the exact included artifacts.",
+  "sha256": {
+    "LICENSE": "3f61ba65e3215b09ef264ba8d777d73c19644309fbb705967634eb5147e500a0",
+    "Readme.md": "bbae584ac34362a032d5e782addfc98399438c92c4873d81a6d41e271bdf6754",
+    "bios/OVMF-LICENSES.txt": "1ddeaed2e7d2e9ecb960bdfc1b8ee45387aff70d056d985d145949af3951657c",
+    "bios/ovmf-code.fd": "33090cc07675baa5190d9f1e84bf5176b33bcbfa9bacac522961150cdb6dbb2a",
+    "bios/ovmf-vars.fd": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e",
+    "bios/seabios.bin": "73e3f359102e3a9982c35fce98eb7cd08f18303ac7f1ba6ebfbe6cdc1c244d98",
+    "bios/vgabios.bin": "a4bc0d80cc3ca028c73dafa8fee396b8d054ce87ebd8abfbd31b06b437607880",
+    "build/cpu-worker.js": "1982d98e76fc08f6d0d338b94bff806263ab5e81ccfe706a4b40e5dbb4c17ef8",
+    "build/libv86.mjs": "80e2c32d8106136ce3f5983693ad319073b210b615eb34161aa3db5dd4869f73",
+    "build/v86-arm64-fallback.wasm": "0470c64c06c3171cd1e342961717cddfb628a4e1a560aba9ea2776a0546d3276",
+    "build/v86-arm64.wasm": "20dd0ea848d0ff38518a8cf0e6bb8783fd06f09613126085b5c03143eb2854bd",
+    "build/v86-bochs-vga.js": "ce8415006ca38dc53bd807323fc01fcfc47e9d3c31b7aad3934636e4408d1984",
+    "build/v86-fallback.wasm": "fc013ffd34429ebbafd92430e1e92d83ead9fc61c7e9de2e11096363feae3668",
+    "build/v86-ne2k.js": "9d855fa313b769f2f2b6b1dc283b6bd17500bfeb05371053e9105599fde822c9",
+    "build/v86-sb16.js": "0f795a57c437877f463674b241d0c27874c07a70fa7caa8d49f147a1fa99b248",
+    "build/v86-virtio-gpu.js": "5e054377d4ffb27fa4a5e98d59837cddf4dd0e71aba89cbdd95eb8910f2fe618",
+    "build/v86.wasm": "37be9a835537e23a3ae38e28b22a768254b56bb975eceb96ed0b5e1d4989bcc1",
+    "v86.d.ts": "3ca5375173861d5916a6d0c1aea8aabf74558c2776f01db71513c278e16e5fa5"
+  },
+  "build_commit": "87d26deb9a77c2e98b4b684f39cc72ba9065d76a",
+  "build_version": "cf82f7cbf73b57a140e7"
+}

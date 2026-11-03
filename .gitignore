@@ -6,5 +6,9 @@ dist/
 build/
 !vendor/v86/build/
 !vendor/v86/build/*
+!vendor/v64/build/
+!vendor/v64/build/*
 .env
 .env.*
+tests/manual/
+test-results/
