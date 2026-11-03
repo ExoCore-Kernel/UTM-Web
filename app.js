@@ -70,6 +70,7 @@ let runtimeSession = null;
 let storageInfo = null;
 let busyOperation = false;
 let routeAnimationKey = "";
+let debugMode = false;
 const terminalDecoder = new TextDecoder();
 const terminalEncoder = new TextEncoder();
 
@@ -558,12 +559,14 @@ function renderDetailBody(vm) {
       <section class="section">
         <p class="section-title">Attached Media</p>
         <div class="group">
-          ${Object.entries(vm.fileRefs).map(([key, file]) => row(fileTitle(key), `${file.name} · ${formatBytes(file.size)}${file.storage === "temporary" ? " · This tab only" : ""}`)).join("")}
+          ${Object.entries(vm.fileRefs).map(([key, file]) => row(fileTitle(key), `${file.name} · ${formatBytes(file.size)} stored${file.virtualSize ? ` / ${formatBytes(file.virtualSize)} capacity` : ""}${file.storage === "temporary" ? " · This tab only" : ""}`)).join("")}
           ${vm.fileRefs?.disk ? navRow("Download Disk Image", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'disk')`) : ""}
           ${vm.fileRefs?.disk2 ? navRow("Download Second Disk", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'disk2')`) : ""}
           ${vm.fileRefs?.diskExport ? navRow("Download Saved Disk Copy", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'diskExport')`) : ""}
           ${vm.fileRefs?.state ? navRow("Download Save State", "sf:square.and.arrow.down", "icon-green", `downloadAttachedFile('${vm.id}', 'state')`) : ""}
+          ${["disk", "disk2"].filter(key => vm.fileRefs?.[key] && diskFormat(vm.fileRefs[key]) === "raw" && !vm.fileRefs.state).map(key => navRow(`Compact ${fileTitle(key)} (QCOW2)`, "sf:externaldrive", "icon-blue", `compactStoredDisk('${vm.id}', '${key}')`)).join("")}
         </div>
+        <p class="section-footer">QCOW2 images leave zero-filled blocks out and expand automatically when read by the VM. For a saved VM, use Files while it is running to download a compact or expanded disk including its latest writes.</p>
       </section>
     ` : ""}
     <section class="section">
@@ -573,7 +576,8 @@ function renderDetailBody(vm) {
         ${navRow("Copy Launch Config", "sf:doc.on.clipboard", "icon-blue", `copyV86Config('${vm.id}')`)}
         ${navRow("Export Config", "sf:square.and.arrow.down", "icon-green", `exportConfig('${vm.id}')`)}
       </div>
-      ${codeBlock(config)}
+      ${debugMode ? codeBlock(config) : ""}
+      <button class="nav-button" onclick="toggleAppDebug()">${debugMode ? "Hide Debug Mode" : "Debug Mode"}</button>
     </section>
     <section class="section">
       <p class="section-title">Notes</p>
@@ -846,27 +850,36 @@ function wizardStorage() {
         </div>
         ${navRow(state.wizard.fileRefs.disk ? "Disk Attached" : "Create Blank Disk", "sf:externaldrive", "icon-blue", "createBlankDisk('wizard')", state.wizard.fileRefs.disk?.name || "Optional")}
       </div>
-      <p class="section-footer">Create a writable disk in private browser storage, or use an imported image. RAW disk writes are saved automatically on supported browsers. Your browser’s available storage sets the limit.</p>
+      <p class="section-footer">New QCOW2 disks grow as you use them: a 20 GiB capacity does not reserve 20 GiB of browser storage. Save or close the VM to preserve guest writes in a snapshot. Available browser storage still sets the limit.</p>
     </section>
   `;
 }
 
 async function createBlankDisk(scope) {
   if (busyOperation) return;
-  if (!UTMStorage.supportsOPFS()) { showToast("This browser cannot create writable disks. Import a disk image and save snapshots instead."); return; }
   const target = scope === "wizard" ? state.wizard : state.draft;
   const size = Math.round(Number(target.storage || 2) * 1024 ** 3 / 512) * 512;
   if (!Number.isSafeInteger(size) || size < 16 * 1024 ** 2) { showToast("Choose a disk size of at least 16 MiB."); return; }
   const id = storageId("disk");
-  const url = `opfs:utm-web/disks/${id}.img`;
+  const url = `opfs:utm-web/disks/${id}.qcow2`;
   setBusy("Creating your disk…");
   try {
-    const info = await UTMStorage.estimate();
-    if (info.quota && size > info.quota - (info.usage || 0)) throw new Error("The disk is larger than the browser’s available storage.");
-    await UTMStorage.allocate(url, size);
-    const record = { id, role: "disk", name: "Blank Disk.img", size, storage: "opfs", url, savedAt: Date.now() };
-    await putRecord(record);
-    target.fileRefs.disk = fileMeta(record);
+    const { createBlank } = await import("./disk-images.mjs");
+    let ref;
+    if (UTMStorage.supportsOPFS()) {
+      const file = await UTMStorage.write(url, write => createBlank(size, write));
+      const record = { id, role: "disk", name: "Blank Disk.qcow2", size: file.size, virtualSize: size, storage: "opfs", url, savedAt: Date.now() };
+      await putRecord(record);
+      ref = fileMeta(record);
+    } else {
+      const chunks = [];
+      await createBlank(size, chunk => chunks.push(chunk));
+      ref = await importFileToStore(new File(chunks, "Blank Disk.qcow2"), "disk");
+      ref.virtualSize = size;
+    }
+    const previous = target.fileRefs.disk;
+    target.fileRefs.disk = ref;
+    if (previous) await removeStoredFile(previous).catch(console.warn);
     refreshStorageInfo();
     render();
   } catch (error) { await UTMStorage.remove(url).catch(() => {}); showToast(`Could not create disk: ${error.message}`); }
@@ -904,7 +917,7 @@ function wizardSummary() {
     </section>
     <section class="section">
       <p class="section-title">v64</p>
-      ${codeBlock(config)}
+      ${debugMode ? codeBlock(config) : ""}
     </section>
   `;
 }
@@ -1035,6 +1048,7 @@ function fileMeta(file) {
     role: file.role,
     name: file.name,
     size: file.size,
+    virtualSize: file.virtualSize,
     type: file.type || "application/octet-stream",
     lastModified: file.lastModified || Date.now(),
     savedAt: file.savedAt || Date.now(),
@@ -1220,7 +1234,8 @@ function settingsPaneContent(pane) {
     return `
       <section class="section">
         <p class="section-title">Generated Config</p>
-        ${codeBlock(config)}
+        ${debugMode ? codeBlock(config) : '<p class="section-footer">Enable Debug Mode to show the generated boot configuration.</p>'}
+        <button class="nav-button" onclick="toggleAppDebug()">${debugMode ? "Hide Debug Mode" : "Debug Mode"}</button>
       </section>
       <section class="section">
         <p class="section-title">Save State</p>
@@ -1230,7 +1245,7 @@ function settingsPaneContent(pane) {
           ${fileRow("Restore State", "state", "draft")}
           ${vm.fileRefs?.state ? navRow("Remove Restore State", "sf:trash", "icon-red", "removeDraftState()") : ""}
         </div>
-        <p class="section-footer">Stopping saves your place in this browser. RAW disks in browser storage also keep guest writes as they happen. Use Download in the VM toolbar for a backup on your device.</p>
+        <p class="section-footer">Stopping saves your place in this browser. RAW disks in browser storage also keep guest writes as they happen. QCOW2 disks grow with actual data; their new writes are kept in snapshots, so leave Save When Stopping enabled. Files in the VM toolbar can download a compact QCOW2 or expanded RAW backup.</p>
       </section>
       <section class="section">
         <div class="group">
@@ -1402,7 +1417,7 @@ async function startRuntime(id) {
   appendOutput(`UTM Web ${vm.name}`);
   appendOutput(`Runtime: ${runtimeLabel(vm)}`);
   appendOutput("Engine: v64");
-  appendOutput(formatV86Config(vm));
+  debugLog(formatV86Config(vm));
   appendOutput("");
   if (!("WebAssembly" in window)) {
     failRuntime(vm, "WebAssembly is not available in this browser.");
@@ -1436,13 +1451,12 @@ async function startRuntime(id) {
 
 function appendOutput(line) {
   if (!runtimeSession) return;
+  debugLog(String(line));
+  if (!String(line).startsWith("Stopped:")) return;
+  runtimeSession.error = String(line);
   runtimeSession.output.push(String(line));
-  trimRuntimeOutput();
   const output = $("terminalOutput");
-  if (output) {
-    output.textContent = runtimeSession.output.join("\n");
-    output.scrollTop = output.scrollHeight;
-  }
+  if (output) output.textContent = runtimeSession.output.join("\n");
 }
 
 function debugLog(message) {
@@ -1627,6 +1641,8 @@ async function startLocalV86(vm, session) {
   });
   listen("screen-set-size", size => {
     session.screenSize = (size || []).join("x");
+    [session.guestWidth, session.guestHeight] = size || [];
+    fitGUIWindow();
     updateDebugPanel();
   });
   listen("screen-put-char", captureScreenChar);
@@ -1667,51 +1683,189 @@ function runtimeUrl(path) {
   return new URL(path, window.location.href).href;
 }
 
+function toggleAppDebug() {
+  debugMode = !debugMode;
+  render();
+}
+
 function renderDisplay() {
   const vm = vmById(state.route.id);
   const session = runtimeSession && runtimeSession.vmId === vm.id ? runtimeSession : {
-    status: "stopped",
-    output: ["No active runtime session."],
-    diskRef: null
+    status: "stopped", output: ["No active runtime session."], diskRef: null
   };
   renderNav(vm.name, navButton("Stop", "stopDisplay()"), "");
+  $("view").className = "view display-view";
   if (session.screenElement && $("v86Screen") === session.screenElement) {
-    document.querySelector(".runtime-chip").textContent = `${session.status} · v64 · ${vm.architecture}`;
-    $("debugMount").innerHTML = session.debugVisible ? renderDebugPanel(session) : "";
-    updateDebugPanel();
+    syncDisplayControls();
     return;
   }
-  $("view").className = "view display-view";
-  const plan = buildV86Plan(vm);
   const mode = vm.displayMode === "graphical" ? "graphical" : "serial";
   $("view").innerHTML = `
-    <div class="display-surface ${mode}">
-      <div id="v86Screen" class="v86-screen" tabindex="0" aria-label="Virtual machine display">
-        <div class="v86-text"></div>
-        <canvas></canvas>
+    <div id="displaySurface" class="display-surface ${mode}">
+      <div id="guiWindow" class="gui-window" aria-label="Resizable virtual machine window">
+        <div id="v86Screen" class="v86-screen" tabindex="0" aria-label="Virtual machine display">
+          <div class="v86-text"></div><canvas></canvas>
+        </div>
+        <button id="guiResize" class="gui-resize" aria-label="Resize display: drag or use arrow keys" title="Drag to resize">◢</button>
       </div>
       <pre id="terminalOutput" class="terminal-output" tabindex="0">${escapeHtml(session.output.join("\n"))}</pre>
       <form class="serial-input" onsubmit="sendSerialInput(event)">
         <input id="serialTextInput" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="send" aria-label="Serial input">
         <button type="submit">RET</button>
       </form>
+      <div id="guiKeyboard" class="gui-keyboard" hidden>
+        <input id="guiKeyboardInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-label="Type on the guest keyboard" placeholder="Type in your VM…">
+        <div class="guest-keys">
+          <button onclick="sendGuestKey('Escape')">Esc</button><button onclick="sendGuestKey('Tab')">Tab</button>
+          <button onclick="sendGuestKey('ControlAltDelete')">Ctrl Alt Del</button><button onclick="sendGuestKey('Backspace')">⌫</button>
+          <button onclick="sendGuestKey('ArrowLeft')">←</button><button onclick="sendGuestKey('ArrowDown')">↓</button>
+          <button onclick="sendGuestKey('ArrowUp')">↑</button><button onclick="sendGuestKey('ArrowRight')">→</button>
+          <button onclick="sendGuestKey('Enter')">Return</button>
+        </div>
+      </div>
       <div class="floating-toolbar">
         <button onclick="saveActiveDisk()" aria-label="Save VM to browser">Save</button>
         <button onclick="showVMDownloads()" aria-label="Download VM files">Files</button>
-        <button onclick="sendRuntimeEnter()">Enter</button>
-        <button onclick="toggleDebugPanel()">Debug</button>
+        <button onclick="toggleGuestKeyboard()" aria-label="Show touch keyboard">Keyboard</button>
+        <button onclick="toggleDisplayFullscreen()" aria-label="Enter fullscreen">Fullscreen</button>
+        ${mode === "graphical" ? '<button onclick="resetGUIWindow()">Fit</button>' : ''}
+        <button onclick="toggleDebugPanel()" id="debugToggle" aria-pressed="false">Debug</button>
         <button onclick="restartDisplay()">Restart</button>
         <button onclick="stopDisplay()">Close</button>
       </div>
-      <div class="runtime-chip">${escapeHtml(session.status)} · ${escapeHtml(plan.executable)}</div>
-      <div id="debugMount">${session.debugVisible ? renderDebugPanel(session) : ""}</div>
-    </div>
-  `;
-  setupV86Input($("v86Screen"));
+      <div class="fullscreen-controls">
+        <button onclick="toggleGuestKeyboard()" aria-label="Show touch keyboard">Keyboard</button>
+        <button onclick="toggleDisplayFullscreen()" aria-label="Exit fullscreen">Exit Fullscreen</button>
+      </div>
+      <div class="runtime-chip"></div>
+      <div id="debugMount"></div>
+    </div>`;
+  session.screenElement = $("v86Screen");
+  setupV86Input(session.screenElement);
   setupConsoleInput($("terminalOutput"));
-  const output = $("terminalOutput");
-  if (output) output.scrollTop = output.scrollHeight;
+  setupGuestKeyboard($("guiKeyboardInput"));
+  setupGUIResize($("guiResize"));
+  if (typeof ResizeObserver !== "undefined") {
+    session.resizeObserver = new ResizeObserver(() => fitGUIWindow());
+    session.resizeObserver.observe($("displaySurface"));
+  }
+  syncDisplayControls();
+}
+
+function syncDisplayControls() {
+  const session = runtimeSession;
+  if (!session) return;
+  const vm = vmById(session.vmId);
+  $("displaySurface")?.classList.toggle("debug-visible", !!session.debugVisible);
+  $("displaySurface")?.classList.toggle("keyboard-visible", !!session.keyboardVisible);
+  $("app").classList.toggle("display-fullscreen", !!session.fullscreen);
+  const chip = document.querySelector(".runtime-chip");
+  if (chip) chip.textContent = session.error || `${session.status} · v64 · ${vm.architecture}`;
+  $("debugToggle")?.setAttribute("aria-pressed", String(!!session.debugVisible));
+  if ($("debugMount")) $("debugMount").innerHTML = session.debugVisible ? renderDebugPanel(session) : "";
+  if ($("guiKeyboard")) $("guiKeyboard").hidden = !session.keyboardVisible || vm.displayMode !== "graphical";
   updateDebugPanel();
+  fitGUIWindow();
+}
+
+async function toggleDisplayFullscreen() {
+  if (!runtimeSession) return;
+  const session = runtimeSession;
+  session.fullscreen = !session.fullscreen;
+  syncDisplayControls();
+  try {
+    if (session.fullscreen && !document.fullscreenElement) await $("app").requestFullscreen?.();
+    else if (!session.fullscreen && document.fullscreenElement) await document.exitFullscreen?.();
+  } catch { /* iOS and embedded views use the same viewport-filling CSS fallback. */ }
+  fitGUIWindow();
+}
+
+function toggleGuestKeyboard() {
+  if (!runtimeSession) return;
+  if (vmById(runtimeSession.vmId).displayMode === "serial") {
+    $("serialTextInput")?.focus();
+    return;
+  }
+  runtimeSession.keyboardVisible = !runtimeSession.keyboardVisible;
+  syncDisplayControls();
+  if (runtimeSession.keyboardVisible) $("guiKeyboardInput")?.focus();
+  else $("guiKeyboardInput")?.blur();
+}
+
+function fitGUIWindow() {
+  const session = runtimeSession, surface = $("displaySurface"), frame = $("guiWindow");
+  if (!session || !surface || !frame) return;
+  const bounds = surface.getBoundingClientRect();
+  const width = Math.max(1, bounds.width - (session.fullscreen ? 0 : 24));
+  const height = Math.max(1, bounds.height - (session.fullscreen ? 0 : 108) - (session.keyboardVisible ? 140 : 0));
+  const ratio = (session.guestWidth || 4) / (session.guestHeight || 3);
+  const wanted = session.fullscreen ? width : session.windowWidth || width;
+  const fittedWidth = Math.min(wanted, width, height * ratio);
+  frame.style.width = `${Math.max(1, fittedWidth)}px`;
+  frame.style.height = `${Math.max(1, fittedWidth / ratio)}px`;
+}
+
+function resetGUIWindow() {
+  if (runtimeSession) runtimeSession.windowWidth = null;
+  fitGUIWindow();
+}
+
+function setupGUIResize(handle) {
+  if (!handle) return;
+  let drag;
+  handle.addEventListener("pointerdown", event => {
+    event.preventDefault(); event.stopPropagation();
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, width: $("guiWindow").getBoundingClientRect().width };
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener("pointermove", event => {
+    if (!drag || drag.id !== event.pointerId || !runtimeSession) return;
+    const ratio = (runtimeSession.guestWidth || 4) / (runtimeSession.guestHeight || 3);
+    runtimeSession.windowWidth = Math.max(160, drag.width + (event.clientX - drag.x) + (event.clientY - drag.y) * ratio);
+    fitGUIWindow();
+  });
+  const end = () => { drag = null; };
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+  handle.addEventListener("lostpointercapture", end);
+  handle.addEventListener("keydown", event => {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key) || !runtimeSession) return;
+    event.preventDefault(); event.stopPropagation();
+    const direction = ["ArrowLeft", "ArrowDown"].includes(event.key) ? -1 : 1;
+    runtimeSession.windowWidth = Math.max(160, $("guiWindow").getBoundingClientRect().width + direction * 32);
+    fitGUIWindow();
+  });
+}
+
+function setupGuestKeyboard(input) {
+  if (!input) return;
+  const flush = () => {
+    if (input.value && runtimeSession?.emulator) {
+      sendKeyboardInput(runtimeSession.emulator, input.value);
+      input.value = "";
+    }
+  };
+  input.addEventListener("input", event => { if (!event.isComposing) flush(); });
+  input.addEventListener("compositionend", flush);
+  input.addEventListener("beforeinput", event => {
+    if (event.inputType === "deleteContentBackward") { event.preventDefault(); sendGuestKey("Backspace"); }
+    else if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") { event.preventDefault(); sendGuestKey("Enter"); }
+  });
+  input.addEventListener("keydown", event => {
+    if (["Enter", "Tab", "Escape", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key) && !event.isComposing) {
+      event.preventDefault(); event.stopPropagation(); sendGuestKey(event.key);
+    }
+  });
+  // Keep the phone keyboard open while tapping the extra guest keys.
+  $("guiKeyboard").addEventListener("pointerdown", event => { if (event.target.closest("button")) event.preventDefault(); });
+}
+
+function sendGuestKey(key) {
+  const keys = { Enter: "\r", Tab: "\t", Escape: "\x1b", Backspace: "\x7f", ArrowUp: "\x1b[A", ArrowDown: "\x1b[B", ArrowRight: "\x1b[C", ArrowLeft: "\x1b[D" };
+  const emulator = runtimeSession?.emulator;
+  if (!emulator) return;
+  if (key === "ControlAltDelete") emulator.keyboard_send_scancodes([0x1D, 0x38, 0xE0, 0x53, 0xE0, 0xD3, 0xB8, 0x9D]);
+  else if (keys[key]) sendKeyboardInput(emulator, keys[key]);
 }
 
 function renderDebugPanel(session) {
@@ -1742,6 +1896,7 @@ function renderDebugPanel(session) {
         <input id="debugSerialInput" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="serial label">
         <button type="submit">Serial CRLF</button>
       </form>
+      <details><summary>Boot configuration</summary>${codeBlock(formatV86Config(vmById(session.vmId)))}</details>
       <pre id="debugOutput">${escapeHtml((session.debug || []).join("\n"))}</pre>
     </section>
   `;
@@ -1794,8 +1949,41 @@ function enableAutoBootEnter() {
 
 function setupV86Input(screen) {
   if (!screen) return;
-  screen.addEventListener("pointerdown", () => screen.focus());
-  screen.addEventListener("touchstart", () => screen.focus(), { passive: true });
+  let touch;
+  const send = (name, value) => runtimeSession?.emulator?.bus?.send(name, value);
+  const position = event => {
+    const canvas = screen.querySelector("canvas");
+    const rect = (canvas?.getBoundingClientRect().width ? canvas : screen).getBoundingClientRect();
+    send("mouse-absolute", [Math.max(0, Math.min(rect.width, event.clientX - rect.left)), Math.max(0, Math.min(rect.height, event.clientY - rect.top)), rect.width, rect.height]);
+  };
+  screen.addEventListener("pointerdown", event => {
+    screen.focus({ preventScroll: true });
+    if (event.pointerType !== "touch" || touch) return;
+    event.preventDefault();
+    touch = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    screen.setPointerCapture(event.pointerId);
+    position(event);
+    send("mouse-click", [true, false, false]);
+  });
+  screen.addEventListener("pointermove", event => {
+    if (!touch || touch.id !== event.pointerId) return;
+    event.preventDefault();
+    send("mouse-delta", [event.clientX - touch.x, touch.y - event.clientY]);
+    position(event);
+    touch.x = event.clientX; touch.y = event.clientY;
+  });
+  const release = event => {
+    if (!touch || touch.id !== event.pointerId) return;
+    send("mouse-click", [false, false, false]); touch = null;
+  };
+  screen.addEventListener("pointerup", release);
+  screen.addEventListener("pointercancel", release);
+  screen.addEventListener("lostpointercapture", release);
+  // Pointer events above provide tap/drag for PC and ARM tablet input. Suppress
+  // the runtime's legacy touch path to avoid duplicate deltas and synthetic clicks.
+  for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"]) screen.addEventListener(type, event => {
+    event.preventDefault(); event.stopPropagation();
+  }, { passive: false });
 }
 
 function setupConsoleInput(element) {
@@ -1909,11 +2097,13 @@ function sendKeyboardInput(emulator, text) {
     "\x1b[D": [0xE0, 0x4B, 0xE0, 0xCB]
   };
   if (scancodes[text]) {
-    emulator.keyboard_send_scancodes(scancodes[text], 10);
-    return;
+    return emulator.keyboard_send_scancodes(scancodes[text]);
   }
-  const printable = text.replace(/[\r\n\t\x1b\x7f]/g, "");
-  if (printable) emulator.keyboard_send_text(printable);
+  // Preserve newlines/tabs in pasted text without sending them twice.
+  for (const part of text.split(/([\r\n\t\x1b\x7f])/).filter(Boolean)) {
+    if (scancodes[part]) emulator.keyboard_send_scancodes(scancodes[part]);
+    else emulator.keyboard_send_text(part);
+  }
 }
 
 function debugTextLabel(text) {
@@ -1938,7 +2128,12 @@ async function stopDisplay(skipSave = false) {
       return false;
     }
   }
-  if (session) { session.cancelled = true; clearTimeout(session.startTimer); clearTimeout(session.serialTimer); }
+  if (session) {
+    session.cancelled = true; clearTimeout(session.startTimer); clearTimeout(session.serialTimer);
+    session.resizeObserver?.disconnect();
+    if (session.fullscreen && document.fullscreenElement) await document.exitFullscreen?.().catch(() => {});
+  }
+  $("app").classList.remove("display-fullscreen");
   runtimeSession = null;
   if (session?.emulator) {
     setBusy("Closing your VM…");
@@ -2018,7 +2213,7 @@ function showVMDownloads() {
   const vm = vmById(runtimeSession?.vmId);
   state.actionSheet = { title: "Save a copy on your device", actions: [
     ["Download VM Snapshot", "downloadSnapshot()"],
-    ...(vm.fileRefs?.disk ? [["Download Current Disk", "downloadRunningDisk()"]] : []),
+    ...(vm.fileRefs?.disk ? [["Download Compact Disk (QCOW2)", "downloadRunningDisk()"], ["Download Expanded Disk (RAW)", "downloadRunningDisk(\'raw\')"]] : []),
     ...(vm.fileRefs?.disk ? [["Save Disk Copy in Browser", "hideSheet(); saveRunningDisk()"]] : []),
     ["Download Launch Config", "exportConfig(); hideSheet()"]
   ] };
@@ -2051,18 +2246,18 @@ async function downloadTarget(name) {
   };
 }
 
-async function downloadRuntimeFile(kind) {
+async function downloadRuntimeFile(kind, format = "qcow2") {
   if (busyOperation || runtimeSession?.status !== "running") return;
   const session = runtimeSession;
   const vm = vmById(session.vmId);
   const name = vm.name.replace(/[^A-Za-z0-9._-]+/g, "-") || "utm-web";
   let target;
   try {
-    target = await downloadTarget(`${name}.${kind === "state" ? "v64state.bin" : "qcow2"}`);
+    target = await downloadTarget(`${name}.${kind === "state" ? "v64state.bin" : format === "raw" ? "img" : "qcow2"}`);
     hideSheet();
     setBusy(kind === "state" ? "Preparing snapshot download…" : "Preparing disk download…");
     if (kind === "state") await session.emulator.save_state_stream(target.write);
-    else await session.emulator.export_disk_image(UTMRuntime.isARM(vm) ? "virtio_disk0" : "hda", { format: "qcow2", write: target.write });
+    else await session.emulator.export_disk_image(UTMRuntime.isARM(vm) ? "virtio_disk0" : "hda", { format, write: target.write });
     await target.finish();
     appendOutput("Download prepared. Keep the launch config and original boot media with your backup.");
   } catch (error) {
@@ -2072,34 +2267,95 @@ async function downloadRuntimeFile(kind) {
 }
 
 function downloadSnapshot() { return downloadRuntimeFile("state"); }
-function downloadRunningDisk() { return downloadRuntimeFile("disk"); }
+function downloadRunningDisk(format = "qcow2") { return downloadRuntimeFile("disk", format); }
 
 async function saveRunningDisk() {
   const session = runtimeSession;
   if (busyOperation || session?.status !== "running" || !session.diskRef) return;
   const vm = vmById(session.vmId);
   const name = `${vm.name.replace(/[^A-Za-z0-9._-]+/g, "-")}.qcow2`;
-  setBusy("Saving disk copy…");
+  const id = storageId("diskExport"), url = `opfs:utm-web/disks/${id}.qcow2`;
+  setBusy("Saving compact disk copy…");
   try {
-    const chunks = [];
-    await session.emulator.export_disk_image(UTMRuntime.isARM(vm) ? "virtio_disk0" : "hda", {
-      format: "qcow2", write: chunk => { chunks.push(chunk.slice()); }
-    });
-    const file = new File(chunks, name, { type: "application/octet-stream" });
-    const previous = vm.fileRefs.diskExport;
-    const ref = await importFileToStore(file, "diskExport");
-    if (ref.storage === "temporary") {
-      downloadBlob(file, name);
-      transientFiles.delete(ref.id);
-      appendOutput("Browser storage is full. The disk copy was prepared as a download instead.");
-      return;
+    let ref;
+    const produce = write => session.emulator.export_disk_image(UTMRuntime.isARM(vm) ? "virtio_disk0" : "hda", { format: "qcow2", write });
+    if (UTMStorage.supportsOPFS()) {
+      const file = await UTMStorage.write(url, produce);
+      const record = { id, role: "diskExport", name, size: file.size, storage: "opfs", url, savedAt: Date.now() };
+      await putRecord(record);
+      ref = fileMeta(record);
+    } else {
+      const chunks = [];
+      await produce(chunk => chunks.push(chunk.slice()));
+      const file = new File(chunks, name);
+      ref = await importFileToStore(file, "diskExport");
+      if (ref.storage === "temporary") { downloadBlob(file, name); transientFiles.delete(ref.id); return; }
     }
+    const previous = vm.fileRefs.diskExport;
     vm.fileRefs.diskExport = ref;
     saveState();
     if (previous) await removeStoredFile(previous).catch(console.warn);
-    appendOutput("Saved a disk copy with guest writes. Download it from Attached Media after stopping.");
+    refreshStorageInfo();
+    showToast("Compact disk copy saved. Download it from Attached Media after closing the VM.");
   } catch (error) {
-    state.actionSheet = { title: "Not enough browser storage for the disk copy. Download it instead.", actions: [["Download Current Disk", "downloadRunningDisk()"]] };
+    await UTMStorage.remove(url).catch(() => {});
+    state.actionSheet = { title: "Browser storage could not save the disk copy. Download it instead.", actions: [["Download Compact Disk", "downloadRunningDisk()"]] };
+    renderActionSheet();
+  } finally { setBusy(""); }
+}
+
+async function compactStoredDisk(id, key = "disk", download = false) {
+  if (busyOperation || runtimeSession) return;
+  const vm = vmById(id), previous = vm.fileRefs?.[key];
+  // A snapshot can contain disk writes and references to the original image.
+  // Never silently detach it or replace the image it needs.
+  if (!previous || vm.fileRefs.state || diskFormat(previous) !== "raw") {
+    showToast("Run this VM and use Files → Download Compact Disk to include saved guest writes.");
+    return;
+  }
+  const name = previous.name.replace(/\.[^.]+$/, "") + ".qcow2";
+  const recordId = storageId(key), url = `opfs:utm-web/disks/${recordId}.qcow2`;
+  let target, committed = false;
+  try {
+    if (download) target = await downloadTarget(name);
+    hideSheet();
+    setBusy("Compacting disk…");
+    const file = await storedFile(previous, `${id}:${key}`);
+    if (!file) throw new Error("The original disk is missing.");
+    const { compactRaw } = await import("./disk-images.mjs");
+    const progress = ({ phase, loaded, total }) => setBusy(`${phase === "scan" ? "Scanning" : "Compacting"} disk… ${Math.round(loaded / total * 100)}%`);
+    if (download) {
+      await compactRaw(file, target.write, progress);
+      await target.finish();
+      return;
+    }
+    let ref;
+    if (UTMStorage.supportsOPFS()) {
+      const compacted = await UTMStorage.write(url, write => compactRaw(file, write, progress));
+      const record = { id: recordId, role: key, name, size: compacted.size, virtualSize: file.size, storage: "opfs", url, savedAt: Date.now() };
+      await putRecord(record);
+      ref = fileMeta(record);
+    } else {
+      const chunks = [];
+      await compactRaw(file, chunk => chunks.push(chunk), progress);
+      const compacted = new File(chunks, name);
+      ref = await importFileToStore(compacted, key);
+      if (ref.storage === "temporary") { downloadBlob(compacted, name); transientFiles.delete(ref.id); return; }
+      ref.virtualSize = file.size;
+    }
+    vm.fileRefs[key] = ref;
+    try { saveState(); } catch (error) { vm.fileRefs[key] = previous; await removeStoredFile(ref).catch(console.warn); throw error; }
+    committed = true;
+    await removeStoredFile(previous).catch(console.warn);
+    refreshStorageInfo();
+    render();
+    showToast(`Disk compacted: ${formatBytes(previous.size)} → ${formatBytes(ref.size)}. Guest capacity is unchanged.`);
+  } catch (error) {
+    if (target) await Promise.resolve(target.abort()).catch(() => {});
+    if (committed) { showToast("The compact disk was saved. Reopen the VM details to refresh the display."); return; }
+    await UTMStorage.remove(url).catch(() => {});
+    if (error.name === "AbortError") return;
+    state.actionSheet = { title: `Could not compact in browser storage: ${error.message}. The original disk is intact.`, actions: [["Download Compact Disk Instead", `compactStoredDisk('${id}', '${key}', true)`]] };
     renderActionSheet();
   } finally { setBusy(""); }
 }
@@ -2266,7 +2522,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261103-final", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261103-ui-disks", {
     updateViaCache: "none"
   });
 }
@@ -2309,4 +2565,20 @@ window.addEventListener?.("storage", event => {
     if (!state.vms.some(vm => vm.id === state.selectedId)) state.selectedId = state.vms[0].id;
     if (["library", "storage"].includes(state.route.name)) render();
   } catch (error) { console.warn(error); }
+});
+
+// Native Escape and the browser's fullscreen exit must also restore app controls.
+document.addEventListener?.("fullscreenchange", () => {
+  if (!runtimeSession || document.fullscreenElement) return;
+  runtimeSession.fullscreen = false;
+  syncDisplayControls();
+});
+window.addEventListener?.("keydown", event => {
+  if (event.key === "Escape" && runtimeSession?.fullscreen) { event.preventDefault(); toggleDisplayFullscreen(); }
+});
+window.visualViewport?.addEventListener("resize", () => {
+  const viewport = window.visualViewport;
+  const surface = $("displaySurface"), view = $("view");
+  if (surface && view) surface.style.height = `${Math.max(1, Math.min(view.getBoundingClientRect().height, viewport.height + viewport.offsetTop - view.getBoundingClientRect().top))}px`;
+  fitGUIWindow();
 });

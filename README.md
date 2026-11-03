@@ -23,17 +23,29 @@ Use **Browser Storage** in the library to see origin storage usage and available
 VM settings are small metadata in localStorage. Large files use IndexedDB and the Origin Private File System (OPFS), not localStorage:
 
 - Imported ISO/kernel/initrd/container images remain in IndexedDB after reload.
-- On browsers with OPFS, imported RAW disks and newly created blank disks are copied into private browser files. v64's CPU worker writes guest disk changes directly to those files and flushes them on stop. Another tab cannot write the same disk simultaneously.
+- On browsers with OPFS, imported RAW disks are copied into private browser files. v64's CPU worker writes guest disk changes directly to those files and flushes them on stop. Another tab cannot write the same disk simultaneously.
 - **Save** streams a snapshot to OPFS, with an IndexedDB fallback. **Close** saves a snapshot by default before stopping; this can be disabled in VM Settings → v64. Restoring streams the saved state instead of reading the whole snapshot into one ArrayBuffer.
-- Disk formats other than RAW retain guest writes in the runtime overlay. Save a snapshot or use **Files → Download Current Disk** / **Save Disk Copy in Browser** to keep those changes.
+- Disk formats other than RAW retain guest writes in the runtime overlay. Save a snapshot or use **Files → Download Compact Disk (QCOW2)** / **Save Disk Copy in Browser** to keep those changes.
 - Closing a browser tab or terminating the browser is not an awaited VM stop. Use **Close** or **Save** before leaving, particularly for non-RAW disks and RAM state. RAW disk writes have periodic flushes, but an abrupt shutdown can lose pending writes.
 - Replacing a saved snapshot removes its old unreferenced file. Deleting a VM removes its unshared attached files.
 
 The old app's default-VM reset and architecture-downgrade bugs are fixed. Existing media references and VM settings are retained. Old v86 snapshots are preserved for download but are not automatically restored with the incompatible v64 runtime; remove them in v64 settings to start a fresh session.
 
+## Compact disks and touch display
+
+New blank disks use sparse **QCOW2** storage. A 20 GiB disk initially stores **256 KiB** of metadata; the guest still sees the full 20 GiB. Reading absent blocks returns zeros automatically, without expanding the disk into a 20 GiB browser file. This is dynamic allocation, not a ZIP archive. QCOW2 guest writes remain in the runtime overlay until saved in a snapshot: keep **Save When Stopping** enabled and use Save/Close before leaving the page. RAW OPFS disks retain their existing direct writeback behavior.
+
+On a stopped VM without a resume snapshot, **Compact Disk Image (QCOW2)** scans an attached RAW image in bounded chunks, stores its nonzero clusters and replaces the attachment only after the new image and VM metadata are saved. The original remains usable if conversion/storage fails, and a compact download is offered. The old image is removed only if no VM still references it. A resume snapshot is never silently discarded or detached to compact a disk; run that VM and use Files to export its current disk instead.
+
+**Files → Download Compact Disk (QCOW2)** includes current guest writes. **Download Expanded Disk (RAW)** expands it back into a conventional full-capacity image. **Save Disk Copy in Browser** streams a compact copy into OPFS when available. Zero-filled clusters are omitted; nonzero data is preserved exactly. Deleting files inside a guest does not necessarily zero their old blocks, so reclaiming that space may require the guest's free-space-zeroing tool before compaction. Expanded RAW downloads need storage for the full virtual capacity. Browsers without a streaming Save File picker must hold downloads in memory.
+
+The VM display keeps the grouped iOS style. Boot configuration and diagnostic logs start hidden; enable **Debug** in the VM or **Debug Mode** in its details/settings to inspect them. Graphical mode has no serial overlay by default. Drag the lower-right display handle with a mouse or finger to resize while keeping the screen's proportions; **Fit** restores the available size. Resizing, the keyboard and fullscreen preserve the running display element.
+
+Touch supports pointer movement, taps and dragging. **Keyboard** opens the device's keyboard for the graphical guest, with extra Return, Escape, Tab, Backspace, arrow and Ctrl-Alt-Delete buttons. Guest text assumes a US keyboard layout. Serial mode keeps its own text input. **Fullscreen** hides the app toolbar/debug overlays and shows the selected GUI or serial output, with small exit/keyboard controls. It uses browser fullscreen where supported and a viewport-filling fallback on iOS/embedded views.
+
 ## Downloads and full-storage recovery
 
-**Files** in the VM toolbar downloads a machine snapshot, the current disk as QCOW2 (including guest writes), or the launch configuration. The same snapshot download is offered if saving runs out of browser storage; the VM stays open. Media that cannot fit can be attached for the current tab without persistent import.
+**Files** in the VM toolbar downloads a machine snapshot, the current disk as compact QCOW2 or expanded RAW (including guest writes), or the launch configuration. The same snapshot download is offered if saving runs out of browser storage; the VM stays open. Media that cannot fit can be attached for the current tab without persistent import.
 
 Where the browser supports a Save File picker, snapshots/disks stream directly to a device file without staging in browser storage. Other browsers use a Blob download, which needs enough device memory for the output. Downloading does not make the browser quota larger.
 
@@ -102,11 +114,12 @@ Open [the local app](http://127.0.0.1:4173/). HTTPS or localhost is required for
 node --check app.js
 node --check runtime-config.js
 node --check browser-storage.js
-node --test tests/runtime.test.cjs tests/network.test.mjs tests/ethernet.test.mjs
+node --check disk-images.mjs
+node --test tests/runtime.test.cjs tests/network.test.mjs tests/ethernet.test.mjs tests/disk-images.test.mjs
 node scripts/prepare-pages.cjs
 ```
 
-Open [runtime verification](http://127.0.0.1:4173/tests/browser.html) and tap **Run verification**. It executes x86 protected-mode, x64 long-mode, ARM64 EL1 and ARM32 SVC probes through the actual app and CPU worker; checks serial input, display retention, streamed snapshots, disk persistence across cold boots, QCOW2 export, quota failure/download recovery, temporary media and metadata migration. It creates verification VMs in that browser's local library.
+Open [runtime verification](http://127.0.0.1:4173/tests/browser.html) and tap **Run verification**. It executes x86 protected-mode, x64 long-mode, ARM64 EL1 and ARM32 SVC probes through the actual app and CPU worker; checks serial input, display retention, streamed snapshots, disk persistence across cold boots, QCOW2 export, quota failure/download recovery, temporary media, metadata migration, touch keyboard routing, resizing/fullscreen retention, sparse disk compaction/expansion and 20 GiB virtual capacity. It creates verification VMs in that browser's local library.
 
 Optional real Linux checks:
 

@@ -39,6 +39,32 @@ button.addEventListener("click", async () => {
       const terminal = app.document.querySelector("#terminalOutput").textContent;
       assert(terminal.includes("-OK"), terminal);
       const screen = app.document.querySelector("#v86Screen");
+      assert(!app.document.querySelector("#debugOutput"), "Diagnostics start hidden");
+      if (!arm) {
+        assert(app.getComputedStyle(app.document.querySelector("#terminalOutput")).display === "none", "GUI starts without serial/log overlay");
+        const keyCodes = [];
+        const bus = app.__utmWebRuntime.emulator.bus, send = bus.send;
+        bus.send = (name, value) => { if (name === "keyboard-code") keyCodes.push(value); return send(name, value); };
+        app.toggleGuestKeyboard();
+        const keyboard = app.document.querySelector("#guiKeyboardInput");
+        assert(!app.document.querySelector("#guiKeyboard").hidden, "Touch keyboard can open");
+        keyboard.value = "a";
+        keyboard.dispatchEvent(new app.InputEvent("input", { data: "a", inputType: "insertText" }));
+        app.sendGuestKey("Backspace");
+        bus.send = send;
+        assert(keyCodes.includes(0x1e) && keyCodes.includes(0x9e) && keyCodes.includes(0x0e), `Touch typing and Backspace reach the real keyboard bus: ${keyCodes}`);
+        app.toggleGuestKeyboard();
+        const resize = app.document.querySelector("#guiResize"), panel = app.document.querySelector("#guiWindow");
+        const oldWidth = panel.getBoundingClientRect().width;
+        resize.dispatchEvent(new app.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+        assert(panel.getBoundingClientRect().width < oldWidth, "Display can resize without restarting");
+        app.resetGUIWindow();
+        await app.toggleDisplayFullscreen();
+        assert(app.document.querySelector("#app").classList.contains("display-fullscreen"), "Fullscreen fallback fills the viewport");
+        assert(app.getComputedStyle(app.document.querySelector(".floating-toolbar")).display === "none", "Fullscreen hides app toolbar");
+        await app.toggleDisplayFullscreen();
+        assert(screen === app.document.querySelector("#v86Screen"), "Keyboard/resize/fullscreen preserve the emulator display");
+      }
       assert(app.__utmWebRuntime.emulator.worker_controller, "The guest CPU must run in a worker");
       app.toggleDebugPanel();
       app.toggleDebugPanel();
@@ -106,6 +132,51 @@ button.addEventListener("click", async () => {
       } finally { app.UTMStorage.estimate = originalEstimate; app.hideSheet(); }
     } else log("SKIP writable-disk checks: this browser has no OPFS.");
     // Save and reload the original default VM, which the old migration discarded.
+    // Compact a real boot disk, run it through v64 and expand it again.
+    {
+      const raw = await (await fetch("fixtures/disk.img")).blob();
+      const ref = await app.importFileToStore(new app.File([raw], "sparse-test.img"), "disk");
+      await app.importConfig({ files: [{ text: async () => JSON.stringify({ vm: { name: "Verification sparse disk", runtime: "local-v64", architecture: "x86", memory: 64, cpu: 1, vgaMemory: 8, network: "none", displayMode: "serial", bootType: "disk", fileRefs: { disk: ref } } }) }] });
+      const current = app.vmById();
+      await app.compactStoredDisk(current.id);
+      app.hideSheet();
+      assert(current.fileRefs.disk.name.endsWith(".qcow2"), "Compaction attaches QCOW2");
+      assert(current.fileRefs.disk.size < ref.size, "Compaction actually frees space");
+      assert(current.fileRefs.disk.virtualSize === raw.size, "Compaction preserves capacity");
+      app.runVM(current.id);
+      await until(() => app.document.querySelector("#terminalOutput")?.textContent.includes("UTM-DISK-WRITTEN-OK"), "compacted disk boots and accepts writes");
+      const expanded = [];
+      await app.__utmWebRuntime.emulator.export_disk_image("hda", { format: "raw", write: chunk => expanded.push(chunk.slice()) });
+      const bytes = new Uint8Array(await new Blob(expanded).arrayBuffer());
+      assert(bytes.length === raw.size && bytes[512] === 0x41 && bytes[510] === 0x55 && bytes[511] === 0xaa, "Expanded RAW retains guest writes and boot signature");
+      await app.stopDisplay();
+      assert(current.fileRefs.state, "Sparse disk writes save in a snapshot");
+      app.runVM(current.id);
+      await until(() => app.__utmWebRuntime?.status === "running", "sparse disk snapshot restore");
+      const restored = [];
+      await app.__utmWebRuntime.emulator.export_disk_image("hda", { format: "raw", write: chunk => restored.push(chunk.slice()) });
+      assert(new Uint8Array(await new Blob(restored).arrayBuffer())[512] === 0x41, "Restored sparse disk retains guest writes");
+      await app.stopDisplay();
+      log("PASS sparse disk compaction: boots, accepts writes, expands to RAW and restores writes from a snapshot.");
+    }
+    // A blank 20 GiB disk must fit in tiny storage and expose 20 GiB to v64.
+    {
+      const file = new app.File([await (await fetch("fixtures/x86.img")).blob()], "probe.img");
+      const floppy = await app.importFileToStore(file, "floppy");
+      await app.importConfig({ files: [{ text: async () => JSON.stringify({ vm: { name: "Verification 20 GiB disk", architecture: "x86", memory: 64, cpu: 1, vgaMemory: 8, network: "none", displayMode: "graphical", bootType: "floppy", fileRefs: { floppy } } }) }] });
+      app.editVM(app.vmById().id);
+      app.setDraft("storage", 20);
+      await app.createBlankDisk("draft");
+      await app.saveSettings();
+      const current = app.vmById();
+      assert(current.fileRefs.disk.virtualSize === 20 * 1024 ** 3 && current.fileRefs.disk.size === 262144, "20 GiB blank disk uses 256 KiB of metadata");
+      app.runVM(current.id);
+      await until(() => app.__utmWebRuntime?.status === "running", "large sparse disk attached");
+      const info = await app.__utmWebRuntime.emulator.disk_image_info("hda");
+      assert(info.size === 20 * 1024 ** 3 && info.format === "qcow2", "v64 sees the full virtual disk capacity");
+      await app.stopDisplay();
+      log("PASS 20 GiB blank disk stores 256 KiB and exposes full capacity to v64.");
+    }
     const stored = JSON.parse(app.localStorage.getItem("utm-web-state"));
     const original = stored.vms.find(vm => vm.id === "custom-pc");
     if (original) {

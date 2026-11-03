@@ -5,7 +5,7 @@ const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'dist');
 fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
-for (const file of ['index.html', 'app.js', 'runtime-config.js', 'browser-storage.js', 'styles.css', 'coi-serviceworker.js', 'manifest.webmanifest', '.nojekyll', 'LICENSE', 'README.md']) {
+for (const file of ['index.html', 'app.js', 'runtime-config.js', 'browser-storage.js', 'disk-images.mjs', 'styles.css', 'coi-serviceworker.js', 'manifest.webmanifest', '.nojekyll', 'LICENSE', 'README.md']) {
   fs.copyFileSync(path.join(root, file), path.join(output, file));
 }
 for (const folder of ['assets', 'vendor/v64']) fs.cpSync(path.join(root, folder), path.join(output, folder), { recursive: true });
