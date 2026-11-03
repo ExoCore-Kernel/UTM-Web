@@ -2,7 +2,7 @@
 
 ## Final checks
 
-- 16 Node tests passed, including real QEMU DHCP traffic, gateway child-process cleanup, local-origin checks, packet transport, VM configuration/migration and pinned runtime checksums. Syntax checks and static Pages packaging passed.
+- 18 Node tests passed, including real QEMU DHCP traffic, gateway child-process cleanup, local-origin checks, packet transport, VM configuration/migration and pinned runtime checksums. Syntax checks and static Pages packaging passed.
 - Browser checks passed for x86 protected mode, x64 long mode, ARM64 EL1, ARM32 SVC, snapshots, retained display elements, RAW disk persistence across cold boots and quota/download recovery.
 - The LAN-hosted browser at the serving computer's LAN address booted Linux and loaded virtio-net. Browser automation subsequently became unavailable, so the remaining live protocol tests used the same v64 engine with real Linux kernels in Node, through the actual LAN HTTP/WebSocket server and QEMU Ethernet gateway.
 - Real x64 and ARM64 guests passed DHCP, public DNS resolution, UDP DNS through 10.0.2.3, public TCP DNS to 1.1.1.1, gateway ICMP ping, LAN TCP stream-integrity checks and binary UDP datagrams of 1, 37 and 4096 bytes, including fragmentation.
@@ -17,6 +17,11 @@
 - A real compacted boot disk boots and accepts guest writes; expanded RAW includes those writes and its original boot signature. Saving/restoring a QCOW2 snapshot preserves those writes.
 - A 20 GiB blank disk stores 256 KiB; the actual v64 disk API reports the full 20 GiB capacity. Independent Node checks cover partial final clusters, and qemu-img validates refcounts/metadata and expands the image losslessly.
 - Native phone touch gestures and the OS keyboard/fullscreen on a physical phone were not exercised. Pointer events, responsive styles and browser fallbacks are implemented; text assumes a US guest keyboard layout.
+
+## Home Screen profile download
+
+- The install button explicitly downloads `UTM.mobileconfig` without navigating to XML. A browser click produced the named file, kept the app URL unchanged, and the downloaded bytes match the generated profile. Apple's plist validator accepts the downloaded file.
+- Regression tests cover the Pages subdirectory, LAN and file URL resolution. The scoped service worker supplies Apple profile MIME/attachment headers even for cached responses; it leaves other projects and ordinary files untouched. The local server adds the same attachment header. Installing the profile on a physical iPhone was not exercised.
 
 ## Limits and delivery
 

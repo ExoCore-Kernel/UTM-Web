@@ -3,7 +3,7 @@ const coiHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin"
 };
 const cachePrefix = `utm-web-${new URL(self.registration.scope).pathname}-`;
-const shellCache = `${cachePrefix}v64-20261103-install`;
+const shellCache = `${cachePrefix}v64-20261103-install2`;
 
 self.addEventListener("install", event => {
   event.waitUntil(self.skipWaiting());
@@ -46,6 +46,12 @@ self.addEventListener("fetch", event => {
       headers.set(key, value);
     }
     const url = new URL(request.url);
+    if (response.status === 200 && url.pathname === new URL("UTM.mobileconfig", self.registration.scope).pathname) {
+      headers.set("Content-Type", "application/x-apple-aspen-config");
+      headers.set("Content-Disposition", 'attachment; filename="UTM.mobileconfig"');
+      headers.set("X-Content-Type-Options", "nosniff");
+      headers.set("Cache-Control", "no-store, must-revalidate");
+    }
     const noStoreDestinations = new Set(["document", "script", "style", "worker", "serviceworker"]);
     if (noStoreDestinations.has(request.destination) || /\.(?:html|js|css)$/i.test(url.pathname)) {
       headers.set("Cache-Control", "no-store, must-revalidate");

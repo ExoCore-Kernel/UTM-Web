@@ -48,6 +48,7 @@ const server = http.createServer(async (request, response) => {
     const info = await stat(target);
     if (!info.isFile()) { response.writeHead(404).end(); return; }
     response.setHeader("Content-Type", types[path.extname(target)] || "application/octet-stream");
+    if (path.extname(target) === ".mobileconfig") response.setHeader("Content-Disposition", 'attachment; filename="UTM.mobileconfig"');
     response.setHeader("Content-Length", info.size);
     if (request.method === "HEAD") response.end();
     else createReadStream(target).on("error", () => response.destroy()).pipe(response);

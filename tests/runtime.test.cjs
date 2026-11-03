@@ -72,14 +72,10 @@ test("Pages uses limited browser HTTP; native HTTPS relay is available only in c
   delete globalThis.location;
 });
 
-test("existing VM media and hardware survive a real app load, including the editable default VM", () => {
-  const saved = { selectedId: "custom-pc", vms: [
-    { id: "custom-pc", name: "My edited PC", runtime: "local-v86", architecture: "x86", memory: 256, fileRefs: { cdrom: { id: "iso-1", name: "linux.iso" } } },
-    { id: "arm", name: "My ARM VM", runtime: "local-v64", architecture: "arm64", cpu: 4 }
-  ] };
+function loadApp(saved = null) {
   const elements = new Map();
   const context = vm.createContext({
-    UTMRuntime: R, UTMStorage: { estimate: async () => ({}) }, structuredClone, TextDecoder, TextEncoder, crypto: webcrypto, console,
+    URL, UTMRuntime: R, UTMStorage: { estimate: async () => ({}) }, structuredClone, TextDecoder, TextEncoder, crypto: webcrypto, console,
     localStorage: { getItem: key => key === "utm-web-state" ? JSON.stringify(saved) : null },
     window: { isSecureContext: false }, navigator: {}, crossOriginIsolated: false,
     document: { getElementById(id) {
@@ -88,6 +84,15 @@ test("existing VM media and hardware survive a real app load, including the edit
     } }
   });
   vm.runInContext(fs.readFileSync(require.resolve("../app.js"), "utf8"), context);
+  return context;
+}
+
+test("existing VM media and hardware survive a real app load, including the editable default VM", () => {
+  const saved = { selectedId: "custom-pc", vms: [
+    { id: "custom-pc", name: "My edited PC", runtime: "local-v86", architecture: "x86", memory: 256, fileRefs: { cdrom: { id: "iso-1", name: "linux.iso" } } },
+    { id: "arm", name: "My ARM VM", runtime: "local-v64", architecture: "arm64", cpu: 4 }
+  ] };
+  const context = loadApp(saved);
   assert.equal(context.vmById("custom-pc").name, "My edited PC");
   assert.equal(context.vmById("custom-pc").fileRefs.cdrom.id, "iso-1");
   assert.equal(context.vmById("arm").architecture, "arm64");
@@ -101,5 +106,48 @@ test("vendored files match their pinned checksums and both CPU cores are valid W
     const bytes = fs.readFileSync(`${root}/${file}`);
     assert.equal(createHash("sha256").update(bytes).digest("hex"), hash, file);
     if (file.endsWith(".wasm")) assert.ok(WebAssembly.validate(bytes), file);
+  }
+});
+
+
+test("home-screen install downloads a named profile without navigating to XML", () => {
+  for (const page of ["https://example.github.io/UTM-Web/index.html?test=1", "http://192.168.1.5:4173/", "file:///tmp/UTM-Web/index.html"]) {
+    const context = loadApp();
+    let clicked = false, removed = false, attached;
+    context.window.location = { href: page, assign() { throw new Error("Must download without navigating"); } };
+    context.document.body = { appendChild(link) { attached = link; } };
+    context.document.createElement = tag => {
+      assert.equal(tag, "a");
+      return { click() { clicked = true; }, remove() { removed = true; } };
+    };
+    context.downloadHomeScreenProfile();
+    assert.equal(attached.href, new URL("UTM.mobileconfig", page).href);
+    assert.equal(attached.download, "UTM.mobileconfig");
+    assert.equal(attached.type, "application/x-apple-aspen-config");
+    assert.ok(clicked && removed);
+    assert.equal(context.window.location.href, page);
+  }
+});
+
+test("profile responses use Apple MIME and attachment headers, including offline cache", async () => {
+  const source = fs.readFileSync(require.resolve("../coi-serviceworker.js"), "utf8");
+  for (const offline of [false, true]) {
+    const handlers = {};
+    const original = new Response("<?xml version=\"1.0\"?><plist/>", { headers: { "Content-Type": "text/plain" } });
+    const context = vm.createContext({
+      URL, Headers, Response,
+      self: { registration: { scope: "https://example.github.io/UTM-Web/" }, location: { origin: "https://example.github.io" }, addEventListener(name, handler) { handlers[name] = handler; } },
+      fetch: async () => { if (offline) throw new Error("Offline"); return original.clone(); },
+      caches: { open: async () => ({ put: async () => {}, match: async () => original.clone() }) }
+    });
+    vm.runInContext(source, context);
+    for (const [pathname, profile] of [["/UTM-Web/UTM.mobileconfig", true], ["/another-project/UTM.mobileconfig", false], ["/UTM-Web/notes.txt", false]]) {
+      let responsePromise;
+      handlers.fetch({ request: new Request("https://example.github.io" + pathname), respondWith(value) { responsePromise = value; } });
+      const response = await responsePromise;
+      assert.equal(response.headers.get("Content-Type"), profile ? "application/x-apple-aspen-config" : "text/plain");
+      assert.equal(response.headers.get("Content-Disposition"), profile ? 'attachment; filename="UTM.mobileconfig"' : null);
+      assert.equal(await response.text(), '<?xml version="1.0"?><plist/>');
+    }
   }
 });

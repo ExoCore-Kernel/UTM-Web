@@ -467,9 +467,15 @@ function renderLibrary() {
 
 function downloadHomeScreenProfile() {
   showToast("In Safari, allow the profile download. Then open Settings → Profile Downloaded → Install. The UTM icon opens the published app on your Home Screen.");
-  // A real static .mobileconfig URL lets Safari recognize the profile download.
-  // Avoid Blob/data URLs, which iOS may save as a file without offering installation.
-  window.location.assign(new URL("UTM.mobileconfig", window.location.href).href);
+  // Explicitly download the same-origin file. Navigating to it can display XML
+  // when a static host serves .mobileconfig as text or a generic binary file.
+  const link = document.createElement("a");
+  link.href = new URL("UTM.mobileconfig", window.location.href).href;
+  link.download = "UTM.mobileconfig";
+  link.type = "application/x-apple-aspen-config";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 function isIpadLayout() {
@@ -2514,12 +2520,14 @@ async function disableIsolation() {
 
 async function ensureIsolation() {
   if (localStorage.getItem("utm-web-disable-isolation") === "1") return;
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
+  // Refresh even when an existing worker already provides isolation headers;
+  // it also supplies the profile download headers that Pages cannot configure.
+  await registerIsolationWorker();
   if (crossOriginIsolated) {
     sessionStorage.removeItem("utm-web-isolation-reload");
     return;
   }
-  if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
-  await registerIsolationWorker();
   if (!navigator.serviceWorker.controller) {
     await new Promise(resolve => navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
   }
@@ -2530,7 +2538,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261103-install", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261103-install2", {
     updateViaCache: "none"
   });
 }
