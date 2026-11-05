@@ -37,6 +37,7 @@ jobs:
           node --check scripts/serve-local.mjs
           node --check scripts/ethernet-relay.mjs
           node --test tests/runtime.test.cjs tests/network.test.mjs tests/ethernet.test.mjs tests/disk-images.test.mjs tests/controls.test.cjs
+          node --expose-gc tests/memory-smoke.mjs 2048
           node scripts/prepare-pages.cjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

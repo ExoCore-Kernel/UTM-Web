@@ -6,6 +6,7 @@ source_dir="$(cd "$(dirname "$0")/.." && pwd)"
 repository_url="${1:-https://github.com/exocore-kernel/UTM-Web.git}"
 cd "$source_dir"
 node --test tests/runtime.test.cjs tests/network.test.mjs tests/ethernet.test.mjs tests/disk-images.test.mjs tests/controls.test.cjs
+node --expose-gc tests/memory-smoke.mjs 2048
 node scripts/prepare-pages.cjs
 publish_dir="$(mktemp -d "${TMPDIR:-/tmp}/utm-web-publish.XXXXXX")"
 git clone --branch main --single-branch "$repository_url" "$publish_dir"

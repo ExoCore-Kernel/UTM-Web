@@ -600,6 +600,11 @@ function renderDetailBody(vm) {
   `;
 }
 
+function memoryHelp(vm) {
+  if (UTMRuntime.is64(vm)) return "Up to 32768 MiB (32 GiB) with a 64-bit guest. Large allocations depend on available device and browser memory; 2048–4096 MiB is a useful starting point for Linux.";
+  return `Up to ${UTMRuntime.maxMemory(vm)} MiB on this 32-bit machine. Select x86_64 or arm64 for up to 32768 MiB. Debian amd64 images need x86_64.`;
+}
+
 function runtimeLabel(vm) {
   return "Local v64";
 }
@@ -818,11 +823,12 @@ function wizardHardware() {
         <div class="row">
           <span class="row-title">RAM</span>
           <span class="range-row">
-            <input type="range" min="128" max="1536" step="128" value="${state.wizard.memory}" oninput="setWizardSilent('memory', Number(this.value)); this.nextElementSibling.value = this.value">
-            <input type="number" value="${state.wizard.memory}" oninput="setWizardSilent('memory', Number(this.value))">
+            <input type="range" min="128" max="${UTMRuntime.maxMemory(state.wizard)}" step="1" value="${state.wizard.memory}" oninput="setWizardSilent('memory', Number(this.value)); this.nextElementSibling.value = this.value">
+            <input type="number" min="16" max="${UTMRuntime.maxMemory(state.wizard)}" step="1" value="${state.wizard.memory}" oninput="setWizardSilent('memory', Number(this.value))" aria-label="RAM in MiB">
           </span>
         </div>
       </div>
+      <p class="section-footer">${memoryHelp(state.wizard)}</p>
     </section>
     <section class="section">
       <p class="section-title">CPU</p>
@@ -1164,12 +1170,13 @@ function settingsPaneContent(pane) {
           <div class="row">
             <span class="row-title">RAM</span>
             <span class="range-row">
-              <input type="range" min="128" max="1536" step="128" value="${vm.memory}" oninput="setDraft('memory', Number(this.value)); this.nextElementSibling.value = this.value">
-              <input type="number" value="${vm.memory}" oninput="setDraft('memory', Number(this.value))">
+              <input type="range" min="128" max="${UTMRuntime.maxMemory(vm)}" step="1" value="${vm.memory}" oninput="setDraft('memory', Number(this.value)); this.nextElementSibling.value = this.value">
+              <input type="number" min="16" max="${UTMRuntime.maxMemory(vm)}" step="1" value="${vm.memory}" oninput="setDraft('memory', Number(this.value))" aria-label="RAM in MiB">
             </span>
           </div>
         </div>
       </section>
+      <p class="section-footer">${memoryHelp(vm)}</p>
       <section class="section">
         <p class="section-title">CPU</p>
         <div class="group">${textInputRow("CPU Cores", vm.cpu, "setDraft('cpu', Number(this.value))", "number")}</div>
@@ -1282,6 +1289,7 @@ function setDraftArchitecture(architecture) {
   const vm = state.draft;
   const wasARM = UTMRuntime.isARM(vm);
   vm.architecture = architecture;
+  vm.memory = Math.min(vm.memory, UTMRuntime.maxMemory(vm));
   vm.machine = UTMRuntime.isARM(vm) ? "virt" : "i440fx";
   vm.firmware = "seabios";
   if (UTMRuntime.isARM(vm) !== wasARM) {
@@ -2557,7 +2565,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261105-input", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261105-memory", {
     updateViaCache: "none"
   });
 }

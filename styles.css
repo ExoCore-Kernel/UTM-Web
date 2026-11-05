@@ -1037,7 +1037,7 @@ button:focus-visible, [tabindex]:focus-visible, input:focus-visible, select:focu
   .choice-copy strong { font-size: 21px; }
   .floating-toolbar { left: 12px; right: 12px; justify-content: space-between; }
   .floating-toolbar button { padding: 0 7px; }
-  .range-row { gap: 8px; grid-template-columns: minmax(50px,1fr) 55px; }
+  .range-row { gap: 8px; grid-template-columns: minmax(50px,1fr) 76px; }
 }
 @media (min-width: 760px) {
   .utm-ios-app { grid-template-rows: calc(52px + env(safe-area-inset-top)) minmax(0,1fr); }

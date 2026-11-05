@@ -5,6 +5,19 @@
   const MiB = 1024 * 1024;
   const architectures = ["x86", "x86_64", "arm64", "arm32"];
   const isARM = vm => ["arm64", "arm32"].includes(vm.architecture);
+  const is64 = vm => ["x86_64", "arm64"].includes(vm.architecture);
+  const maxMemory = vm => is64(vm) ? 32768 : vm.architecture === "x86" ? 2047 : 1536;
+  function memoryOptions(vm) {
+    // v64's memory_size is backed by wasm32 and cannot hold 32 GiB. Its
+    // 64-bit cores expose additional host-backed RAM above physical 4 GiB.
+    // Extended RAM is 2 MiB aligned; keep an odd final MiB in low RAM.
+    const low = is64(vm) && vm.memory > 1536 ? 1536 + vm.memory % 2 : vm.memory;
+    const extended = vm.memory - low;
+    return { memory_size: low * MiB, ...(extended ? {
+      extended_memory_size: extended * MiB,
+      extended_memory_cache: Math.min(64, extended) * MiB
+    } : {}) };
+  }
   const bootTypes = vm => isARM(vm) ? ["kernel"] : ["iso", "disk", "floppy", "kernel"];
   const machineTypes = vm => isARM(vm) ? ["virt"] : ["i440fx", "q35"];
 
@@ -36,8 +49,9 @@
     if (!architectures.includes(vm.architecture)) throw new Error("Choose a supported CPU architecture.");
     if (!machineTypes(vm).includes(vm.machine)) throw new Error("This machine does not support the selected CPU.");
     if (!bootTypes(vm).includes(vm.bootType)) throw new Error("ARM machines boot a kernel directly; select Linux kernel boot.");
-    // Keep RAM below the virt device window / wasm32 address limit on all supported browsers.
-    if (!Number.isInteger(vm.memory) || vm.memory < 16 || vm.memory > 1536) throw new Error("RAM must be a whole number between 16 and 1536 MiB.");
+    if (!Number.isInteger(vm.memory) || vm.memory < 16 || vm.memory > maxMemory(vm)) {
+      throw new Error(`RAM must be a whole number between 16 and ${maxMemory(vm)} MiB for ${vm.architecture}. ${is64(vm) ? "" : "Select x86_64 or arm64 for up to 32768 MiB with a 64-bit guest."}`.trim());
+    }
     if (!Number.isInteger(vm.cpu) || vm.cpu < 1 || vm.cpu > 8) throw new Error("Choose between 1 and 8 CPU cores.");
     if (!Number.isInteger(vm.vgaMemory) || vm.vgaMemory < 1 || vm.vgaMemory > 256) throw new Error("Video RAM must be between 1 and 256 MiB.");
     if (vm.network && !["auto", "none", "browser", "local"].includes(vm.network)) throw new Error("Choose a supported network mode.");
@@ -73,7 +87,7 @@
       cpu_worker_url: resolve(base + "build/cpu-worker.js"),
       wasm_path: resolve(base + `build/${core}.wasm`),
       wasm_fallback_path: resolve(base + `build/${core}-fallback.wasm`),
-      memory_size: vm.memory * MiB,
+      ...memoryOptions(vm),
       graphics_adapter: graphics,
       vram_size: vm.vgaMemory * MiB,
       autostart: true,
@@ -124,5 +138,5 @@
     return config;
   }
 
-  root.UTMRuntime = { base, architectures, isARM, bootTypes, machineTypes, normalize, validate, signature, diskFormat, options };
+  root.UTMRuntime = { base, architectures, isARM, is64, maxMemory, bootTypes, machineTypes, normalize, validate, signature, diskFormat, options };
 })(globalThis);

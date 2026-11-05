@@ -12,7 +12,7 @@ The bundled engine is [speedyHKjournalist/v64](https://github.com/speedyHKjourna
 - PC VGA with keyboard/pointer/touch input; ARM virtio-gpu or serial console.
 - PC ISO, RAW disk, floppy and Linux bzImage boot. ARM uses the virt board with a matching Linux Image/zImage, optional initrd and generated device tree. ARM does not boot PC ISOs or PC firmware.
 - RAW, QCOW2, VHD, VDI, VMDK and VHDX disk imports through v64's format decoders. Format variants, guest drivers and OS compatibility remain subject to v64's limits; not every existing VM image will boot.
-- RAM is limited to 16–1536 MiB per VM for this browser integration. Large disks are read on demand and are not constrained to the guest RAM size.
+- RAM can be configured from 16–32768 MiB (32 GiB) for x86_64 and ARM64 guests. RAM above approximately 1.5 GiB uses v64’s host-backed extended-memory path with a 64 MiB Wasm cache. The x86 limit is 2047 MiB and ARM32 remains limited to 1536 MiB; the extended-memory path requires a 64-bit guest. Available device/browser memory still limits what can actually run. Large disks are read on demand and are not constrained to the guest RAM size.
 
 The app keeps the original grouped iOS look, with larger touch targets, dynamic viewport/safe-area support, button feedback, navigation/sheet animations, reduced-motion support, and an installable home-screen manifest.
 
@@ -156,3 +156,17 @@ UTM assets/UI references retain the repository's [Apache-2.0 license](LICENSE). 
 `node --test tests/controls.test.cjs` checks scaled/bounded PS/2 packets, pacing, mouse release outside the window, capture loss, blur, touch taps/drags, pinch/pan and absolute input. The normal browser suite also checks native input focus and two-finger resize/pan in fullscreen.
 
 For optional KolibriOS testing, put an official floppy image at `tests/manual/kolibrios.img`, serve the app and open `tests/kolibri.html`. The test image used was 0.7.7.0-9254-g62b2b72c, SHA-256 `9e749e88eefa13f09dcce95553ce77495d182399ee4113559444b5e76a127f1a`, from [KolibriOS downloads](https://kolibrios.org/en/download). OS images remain excluded from Git and Pages.
+
+## Large RAM and Debian booting
+
+x86_64 and ARM64 settings allow **32768 MiB (32 GiB)**, using the runtime’s extended-memory implementation above approximately 1.5 GiB. The guest total remains the selected number; extra memory is placed above physical 4 GiB with a bounded 64 MiB cache in WebAssembly memory. Unused host pages may remain virtual, but this does not create additional physical RAM: a device/browser can reject a large allocation or run out of memory under a real workload. The high-memory path requires a 64-bit guest. x86 is limited to 2047 MiB; ARM32 stays at 1536 MiB to leave room for its display/device memory. Switching to a 32-bit architecture clamps the draft RAM to its supported maximum. Resume snapshots still require matching hardware settings.
+
+For an **amd64 Debian ISO**, create a fresh **x86_64** VM; try **UEFI** and **2048–4096 MiB** as a starting configuration. A Syslinux `execute(): Fail to malloc a buffer to exec .linux` error occurs in the BIOS bootloader before Linux starts. Raising the RAM ceiling does not by itself prove that this error is fixed; the exact ISO and a successful boot are needed to verify it.
+
+The optional real-engine check boots original bare-metal programs on both bundled 64-bit cores and verifies reads/writes at the final address of extended RAM (most guest memory stays untouched):
+
+```sh
+node --expose-gc tests/memory-smoke.mjs 2048 32768
+```
+
+The x64 probe can be rebuilt with `nasm -f bin tests/fixtures/memory64.asm -o tests/fixtures/memory64.bin`; ARM64 probe instructions are generated in the smoke script. This checks addressability and backing memory, rather than testing a desktop using every byte of 32 GiB.

@@ -35,7 +35,7 @@ test("ARM options use their own Wasm core, kernel and virtio devices, without PC
 });
 
 test("configuration refuses invalid RAM, cores, board and stale snapshots before allocating a VM", () => {
-  for (const memory of [NaN, 0, 1537, 1.5]) assert.throws(() => R.options({ ...machine("x86"), memory }), /RAM/);
+  for (const memory of [NaN, 0, 2048, 1.5]) assert.throws(() => R.options({ ...machine("x86"), memory }), /RAM/);
   for (const cpu of [0, 9, 1.5]) assert.throws(() => R.options({ ...machine("x86"), cpu }), /cores/);
   assert.throws(() => R.options({ ...machine("arm64"), machine: "q35" }), /machine/);
   assert.throws(() => R.options({ ...machine("arm64"), bootType: "iso" }), /kernel/);
@@ -172,4 +172,38 @@ test("native keyboard forwards typing, Return, deletion and composition once", (
   assert.deepEqual(text, ["hello", "compose"]);
   assert.deepEqual(codes.map(value => [...value]), [[0x0e, 0x8e], [0x1c, 0x9c]]);
   assert.equal(input.value, "\u200b", "keep a deletion target for mobile Backspace");
+});
+
+
+test("64-bit RAM uses extended memory instead of exceeding the wasm32 backing limit", () => {
+  for (const architecture of ["x86_64", "arm64"]) {
+    for (const memory of [1536, 1537, 1538, 2048, 4096, 32767, 32768]) {
+      const config = R.options({ ...machine(architecture), memory });
+      assert.equal(config.memory_size + (config.extended_memory_size || 0), memory * 1024 ** 2);
+      assert.ok(config.memory_size <= 1537 * 1024 ** 2);
+      assert.equal((config.extended_memory_size || 0) % (2 * 1024 ** 2), 0);
+      if (memory > 1537) assert.ok(config.extended_memory_cache <= 64 * 1024 ** 2);
+    }
+  }
+});
+
+test("RAM limits distinguish 32-bit guests and reject values above 32 GiB", () => {
+  assert.equal(R.maxMemory(machine("x86_64")), 32768);
+  assert.equal(R.maxMemory(machine("arm64")), 32768);
+  assert.doesNotThrow(() => R.options({ ...machine("x86"), memory: 2047 }));
+  assert.throws(() => R.options({ ...machine("x86"), memory: 32768 }), /64-bit guest/);
+  assert.throws(() => R.options({ ...machine("arm32"), memory: 1537 }), /RAM/);
+  for (const architecture of ["x86_64", "arm64"]) assert.throws(() => R.options({ ...machine(architecture), memory: 32769 }), /32768/);
+});
+
+
+test("RAM settings expose 32768 MiB and clamp when switching to a 32-bit machine", () => {
+  const context = loadApp({ selectedId: "ram-test", vms: [{ id: "ram-test", architecture: "x86_64", runtime: "local-v64", memory: 32768, cpu: 1, fileRefs: {} }] });
+  context.openSettings();
+  const html = context.settingsPaneContent("System");
+  assert.match(html, /type="number" min="16" max="32768" step="1" value="32768"/);
+  context.setDraftArchitecture("x86");
+  const smaller = context.settingsPaneContent("System");
+  assert.match(smaller, /max="2047" step="1" value="2047"/);
+  assert.match(smaller, /Select x86_64 or arm64/);
 });

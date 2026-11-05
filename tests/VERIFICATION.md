@@ -2,7 +2,7 @@
 
 ## Final checks
 
-- 25 Node tests passed, including real QEMU DHCP traffic, gateway child-process cleanup, local-origin checks, packet transport, VM configuration/migration and pinned runtime checksums. Syntax checks and static Pages packaging passed.
+- 28 Node tests passed, including real QEMU DHCP traffic, gateway child-process cleanup, local-origin checks, packet transport, VM configuration/migration and pinned runtime checksums. Syntax checks and static Pages packaging passed.
 - Browser checks passed for x86 protected mode, x64 long mode, ARM64 EL1, ARM32 SVC, snapshots, retained display elements, RAW disk persistence across cold boots and quota/download recovery.
 - The LAN-hosted browser at the serving computer's LAN address booted Linux and loaded virtio-net. Browser automation subsequently became unavailable, so the remaining live protocol tests used the same v64 engine with real Linux kernels in Node, through the actual LAN HTTP/WebSocket server and QEMU Ethernet gateway.
 - Real x64 and ARM64 guests passed DHCP, public DNS resolution, UDP DNS through 10.0.2.3, public TCP DNS to 1.1.1.1, gateway ICMP ping, LAN TCP stream-integrity checks and binary UDP datagrams of 1, 37 and 4096 bytes, including fragmentation.
@@ -36,3 +36,10 @@ The Pages artifact contains static files only. No GitHub push/deployment was per
 - The custom keyboard panel was removed. Device keyboard focus, deletion, Return and composition forwarding are checked. A physical phone's OS keyboard and touch hardware were not controlled.
 - All four architectures passed the updated browser suite, including fullscreen pinch/pan, retained display element, native keyboard routing, snapshots and sparse disks.
 - Official KolibriOS 0.7.7.0-9254-g62b2b72c booted to its 1024×768 desktop. Its cursor moved through the browser pointer controller; during a 4,800-move stress test the guest executed another 168,310,437 instructions and remained running. A subsequent click opened the guest System Panel. This verifies the tested image and frontend input fixes; it does not establish that every possible guest driver failure is fixed.
+
+## Extended RAM update — 5 November 2026
+
+- x86_64/ARM64 RAM controls and validation now accept up to 32768 MiB. Requests above approximately 1.5 GiB are split into low WebAssembly-backed RAM and the real extended-memory store at physical 4 GiB, with a maximum 64 MiB cache; total guest RAM equals the requested value. Odd MiB values are kept exact while extended RAM remains 2 MiB aligned.
+- Original x64 long-mode and ARM64 bare-metal programs ran on the pinned bundled cores with 2048 and 32768 MiB. They wrote/read the last qword at physical `0x11ffffff8` and `0x89ffffff8`; independent host physical reads matched. This is a memory mapping/access check with most pages untouched, not a full-memory desktop stress test.
+- x86 is capped at 2047 MiB and ARM32 at 1536 MiB. The System settings rendering and clamping from x64 to x86 are covered by a regression test; older configurations within their previous limits keep the same backing layout.
+- The reported Debian Syslinux BIOS malloc failure was traced to bootloader code, but the user's exact ISO was not supplied/reproduced. No claim is made that extending the RAM ceiling alone fixes that boot failure.
