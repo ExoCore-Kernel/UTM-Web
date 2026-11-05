@@ -1621,7 +1621,7 @@ async function startLocalV86(vm, session) {
   const restoreFile = payloads.state;
   delete options.initial_state;
   options.autostart = !restoreFile;
-  options.screen = { container: screen, use_graphical_text: false };
+  options.screen = { container: screen };
   // One Pointer Events controller owns both desktop and touch input.
   options.disable_mouse = true;
   options.disable_keyboard = vm.displayMode === "serial";
@@ -1665,7 +1665,7 @@ async function startLocalV86(vm, session) {
   });
   listen("screen-set-size", size => {
     session.screenSize = (size || []).join("x");
-    [session.guestWidth, session.guestHeight] = size || [];
+    session.videoSize = size;
     fitGUIWindow();
     updateDebugPanel();
   });
@@ -1731,7 +1731,7 @@ function renderDisplay() {
     <div id="displaySurface" class="display-surface ${mode}">
       <div id="guiWindow" class="gui-window" aria-label="Resizable virtual machine window">
         <div id="v86Screen" class="v86-screen" tabindex="0" aria-label="Virtual machine display" aria-description="Use two fingers to move and pinch to resize. For a relative mouse, slide one finger to move, tap to click, or double-tap and drag to hold the mouse button.">
-          <div class="v86-text"></div><canvas></canvas>
+          <canvas></canvas>
         </div>
         <button id="guiResize" class="gui-resize" aria-label="Resize display: drag or use arrow keys" title="Drag to resize">◢</button>
       </div>
@@ -1767,6 +1767,10 @@ function renderDisplay() {
   if (typeof ResizeObserver !== "undefined") {
     session.resizeObserver = new ResizeObserver(() => fitGUIWindow());
     session.resizeObserver.observe($("displaySurface"));
+  }
+  if (typeof MutationObserver !== "undefined") {
+    session.screenObserver = new MutationObserver(() => { if (runtimeSession === session) fitGUIWindow(); });
+    session.screenObserver.observe(session.screenElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["width", "height"] });
   }
   syncDisplayControls();
 }
@@ -1825,6 +1829,13 @@ function displayBounds() {
 function fitGUIWindow() {
   const session = runtimeSession, frame = $("guiWindow");
   if (!session || !frame || !$("displaySurface")) return;
+  const pixels = UTMControls.displayPixels(session.videoSize, session.screenElement?.querySelector("canvas"));
+  if (session.guestWidth !== pixels.width || session.guestHeight !== pixels.height) {
+    // A BIOS text/font change or a guest graphics-mode switch starts fitted.
+    // Otherwise a zoom/pan from the previous mode can hide installer buttons.
+    session.displayZoom = 1; session.panX = session.panY = 0;
+    session.guestWidth = pixels.width; session.guestHeight = pixels.height;
+  }
   const bounds = displayBounds();
   const ratio = (session.guestWidth || 4) / (session.guestHeight || 3);
   const layout = UTMControls.layout(bounds.width, bounds.height, ratio, session.displayZoom || 1, session.panX || 0, session.panY || 0);
@@ -2171,6 +2182,7 @@ async function stopDisplay(skipSave = false) {
   if (session) {
     session.cancelled = true; clearTimeout(session.startTimer); clearTimeout(session.serialTimer);
     session.resizeObserver?.disconnect();
+    session.screenObserver?.disconnect();
     session.inputController?.destroy();
     if (session.fullscreen && document.fullscreenElement) await document.exitFullscreen?.().catch(() => {});
   }
@@ -2565,7 +2577,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261105-memory", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261105-fit", {
     updateViaCache: "none"
   });
 }

@@ -3,7 +3,7 @@ const coiHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin"
 };
 const cachePrefix = `utm-web-${new URL(self.registration.scope).pathname}-`;
-const shellCache = `${cachePrefix}v64-20261105-memory`;
+const shellCache = `${cachePrefix}v64-20261105-fit`;
 
 self.addEventListener("install", event => {
   event.waitUntil(self.skipWaiting());

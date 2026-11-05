@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 require('../vm-controls.js');
-const { layout, pointerInput } = UTMControls;
+const { displayPixels, layout, pointerInput } = UTMControls;
 class Target {
   listeners = new Map();
   addEventListener(name, fn) { if (!this.listeners.has(name)) this.listeners.set(name, new Set()); this.listeners.get(name).add(fn); }
@@ -105,4 +105,16 @@ test('absolute touch uses the display bounds and does not also inject relative p
   assert.ok(!f.sent.some(([name]) => name === 'mouse-delta'));
   assert.deepEqual(f.sent.at(-1), ['mouse-click', [false, false, false]]);
   f.controller.destroy();
+});
+
+
+test('VGA text size is fitted as pixels rather than character columns and rows', () => {
+  assert.deepEqual(displayPixels([80, 25, 0], { width: 720, height: 400 }), { width: 720, height: 400 });
+  assert.deepEqual(displayPixels([80, 25, 0]), { width: 720, height: 400 });
+  assert.deepEqual(displayPixels([80, 25, 0], { width: 640, height: 350 }), { width: 640, height: 350 });
+  assert.deepEqual(displayPixels([1024, 768, 32]), { width: 1024, height: 768 });
+  const pixels = displayPixels([80, 25, 0], { width: 720, height: 400 });
+  const fitted = layout(1512, 982, pixels.width / pixels.height);
+  assert.ok(fitted.width <= 1512 && fitted.height <= 982);
+  assert.equal(fitted.width / fitted.height, 1.8);
 });

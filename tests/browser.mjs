@@ -62,6 +62,11 @@ button.addEventListener("click", async () => {
         await app.toggleDisplayFullscreen();
         assert(app.document.querySelector("#app").classList.contains("display-fullscreen"), "Fullscreen fallback fills the viewport");
         assert(app.getComputedStyle(app.document.querySelector(".floating-toolbar")).display === "none", "Fullscreen hides app toolbar");
+        const canvas = screen.querySelector("canvas");
+        const fitted = panel.getBoundingClientRect(), drawn = canvas.getBoundingClientRect();
+        assert(Math.abs(fitted.width / fitted.height - canvas.width / canvas.height) < .01, "Text mode uses actual font/canvas pixels for its aspect ratio");
+        assert(drawn.top >= fitted.top - 1 && drawn.left >= fitted.left - 1 && drawn.bottom <= fitted.bottom + 1 && drawn.right <= fitted.right + 1, "All four edges of the installer canvas fit inside the display");
+
         const surface = app.document.querySelector("#displaySurface");
         const pointer = (type, id, x, y) => screen.dispatchEvent(new app.PointerEvent(type, { bubbles: true, pointerType: "touch", pointerId: id, clientX: x, clientY: y }));
         const center = panel.getBoundingClientRect();

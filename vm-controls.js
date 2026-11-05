@@ -2,6 +2,14 @@
 (function (root) {
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+  function displayPixels(size, canvas) {
+    // Text-mode notifications contain columns/rows (bpp = 0), not pixels.
+    // The canvas includes the actual VGA font dimensions, including font changes.
+    if (canvas?.width > 0 && canvas?.height > 0) return { width: canvas.width, height: canvas.height };
+    const [width = 80, height = 25, bpp = 0] = size || [];
+    return { width: bpp ? width : width * 9, height: bpp ? height : height * 16 };
+  }
+
   function layout(width, height, ratio, zoom = 1, x = 0, y = 0) {
     const baseWidth = Math.min(width, height * ratio);
     zoom = clamp(zoom, Math.min(1, 160 / Math.max(1, baseWidth)), 8);
@@ -187,5 +195,5 @@
     return { reset, flush, destroy() { reset(); destroyed = true; cleanups.forEach(fn => fn()); } };
   }
 
-  root.UTMControls = { layout, pointerInput };
+  root.UTMControls = { displayPixels, layout, pointerInput };
 })(globalThis);
