@@ -47,7 +47,7 @@ button.addEventListener("click", async () => {
         bus.send = (name, value) => { if (name === "keyboard-code") keyCodes.push(value); return send(name, value); };
         app.toggleGuestKeyboard();
         const keyboard = app.document.querySelector("#guiKeyboardInput");
-        assert(!app.document.querySelector("#guiKeyboard").hidden, "Touch keyboard can open");
+        assert(app.document.activeElement === keyboard && !app.document.querySelector(".guest-keys"), "Device keyboard opens without a custom keyboard panel");
         keyboard.value = "a";
         keyboard.dispatchEvent(new app.InputEvent("input", { data: "a", inputType: "insertText" }));
         app.sendGuestKey("Backspace");
@@ -62,6 +62,19 @@ button.addEventListener("click", async () => {
         await app.toggleDisplayFullscreen();
         assert(app.document.querySelector("#app").classList.contains("display-fullscreen"), "Fullscreen fallback fills the viewport");
         assert(app.getComputedStyle(app.document.querySelector(".floating-toolbar")).display === "none", "Fullscreen hides app toolbar");
+        const surface = app.document.querySelector("#displaySurface");
+        const pointer = (type, id, x, y) => screen.dispatchEvent(new app.PointerEvent(type, { bubbles: true, pointerType: "touch", pointerId: id, clientX: x, clientY: y }));
+        const center = panel.getBoundingClientRect();
+        const cx = center.left + center.width / 2, cy = center.top + center.height / 2;
+        pointer("pointerdown", 701, cx - 50, cy); pointer("pointerdown", 702, cx + 50, cy);
+        pointer("pointermove", 701, cx - 100, cy); pointer("pointermove", 702, cx + 100, cy);
+        assert(app.__utmWebRuntime.displayZoom > 1.9, "Two-finger pinch resizes in fullscreen");
+        pointer("pointermove", 701, cx - 80, cy + 20); pointer("pointermove", 702, cx + 120, cy + 20);
+        assert(Math.abs(app.__utmWebRuntime.panX) > 1 || Math.abs(app.__utmWebRuntime.panY) > 1, "Two-finger drag moves the fullscreen window");
+        pointer("pointerup", 702, cx + 120, cy + 20); pointer("pointerup", 701, cx - 80, cy + 20);
+        app.resetGUIWindow();
+        assert(app.__utmWebRuntime.displayZoom === 1 && app.__utmWebRuntime.panX === 0, "Fit resets fullscreen zoom and position");
+
         await app.toggleDisplayFullscreen();
         assert(screen === app.document.querySelector("#v86Screen"), "Keyboard/resize/fullscreen preserve the emulator display");
       }

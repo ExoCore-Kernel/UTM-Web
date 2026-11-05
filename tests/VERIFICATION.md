@@ -2,7 +2,7 @@
 
 ## Final checks
 
-- 18 Node tests passed, including real QEMU DHCP traffic, gateway child-process cleanup, local-origin checks, packet transport, VM configuration/migration and pinned runtime checksums. Syntax checks and static Pages packaging passed.
+- 25 Node tests passed, including real QEMU DHCP traffic, gateway child-process cleanup, local-origin checks, packet transport, VM configuration/migration and pinned runtime checksums. Syntax checks and static Pages packaging passed.
 - Browser checks passed for x86 protected mode, x64 long mode, ARM64 EL1, ARM32 SVC, snapshots, retained display elements, RAW disk persistence across cold boots and quota/download recovery.
 - The LAN-hosted browser at the serving computer's LAN address booted Linux and loaded virtio-net. Browser automation subsequently became unavailable, so the remaining live protocol tests used the same v64 engine with real Linux kernels in Node, through the actual LAN HTTP/WebSocket server and QEMU Ethernet gateway.
 - Real x64 and ARM64 guests passed DHCP, public DNS resolution, UDP DNS through 10.0.2.3, public TCP DNS to 1.1.1.1, gateway ICMP ping, LAN TCP stream-integrity checks and binary UDP datagrams of 1, 37 and 4096 bytes, including fragmentation.
@@ -28,3 +28,11 @@
 This is Ethernet NAT supporting normal TCP/UDP applications, not every protocol a physical Wi-Fi interface can carry. Radio passthrough, arbitrary raw-IP protocols and transparent multicast/LAN bridging are not provided. Incoming services need explicit forwarding. No physical phone or second PC was controlled during verification; LAN-address serving and the client-side architecture were verified on this computer.
 
 The Pages artifact contains static files only. No GitHub push/deployment was performed. `bash scripts/push-to-github.sh` verifies, clones the existing **main** branch and pushes `HEAD:main` without force-pushing. Native .utm import remains excluded.
+
+## Input and fullscreen update — 5 November 2026
+
+- One Pointer Events controller owns guest mouse input. It captures drags and releases on pointer-up outside the screen, pointer cancellation, lost capture, blur, hidden document and emulator stop. Relative motion is scaled to guest pixels, coalesced and split into bounded signed-byte PS/2 packets. Touch clicks stay pressed for 50 ms so polling guests can observe them.
+- Two fingers pan and pinch in fullscreen and windowed mode without leaking guest clicks. Fit resets position and zoom; entering fullscreen starts at the largest aspect-preserving fit, with the corner resize handle still available. Canvas CSS also scales up smaller guest resolutions to fill that fitted window.
+- The custom keyboard panel was removed. Device keyboard focus, deletion, Return and composition forwarding are checked. A physical phone's OS keyboard and touch hardware were not controlled.
+- All four architectures passed the updated browser suite, including fullscreen pinch/pan, retained display element, native keyboard routing, snapshots and sparse disks.
+- Official KolibriOS 0.7.7.0-9254-g62b2b72c booted to its 1024×768 desktop. Its cursor moved through the browser pointer controller; during a 4,800-move stress test the guest executed another 168,310,437 instructions and remained running. A subsequent click opened the guest System Panel. This verifies the tested image and frontend input fixes; it does not establish that every possible guest driver failure is fixed.

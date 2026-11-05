@@ -39,9 +39,9 @@ On a stopped VM without a resume snapshot, **Compact Disk Image (QCOW2)** scans 
 
 **Files → Download Compact Disk (QCOW2)** includes current guest writes. **Download Expanded Disk (RAW)** expands it back into a conventional full-capacity image. **Save Disk Copy in Browser** streams a compact copy into OPFS when available. Zero-filled clusters are omitted; nonzero data is preserved exactly. Deleting files inside a guest does not necessarily zero their old blocks, so reclaiming that space may require the guest's free-space-zeroing tool before compaction. Expanded RAW downloads need storage for the full virtual capacity. Browsers without a streaming Save File picker must hold downloads in memory.
 
-The VM display keeps the grouped iOS style. Boot configuration and diagnostic logs start hidden; enable **Debug** in the VM or **Debug Mode** in its details/settings to inspect them. Graphical mode has no serial overlay by default. Drag the lower-right display handle with a mouse or finger to resize while keeping the screen's proportions; **Fit** restores the available size. Resizing, the keyboard and fullscreen preserve the running display element.
+The VM display keeps the grouped iOS style. Boot configuration and diagnostic logs start hidden; enable **Debug** in the VM or **Debug Mode** in its details/settings to inspect them. Graphical mode has no serial overlay by default. Drag the lower-right display handle with a mouse or finger to resize while keeping the screen's proportions, or pinch with two fingers. Two fingers also move the window, including in fullscreen. **Fit** restores the largest display that fits the available screen and resets its position. Resizing, the keyboard and fullscreen preserve the running display element.
 
-Touch supports pointer movement, taps and dragging. **Keyboard** opens the device's keyboard for the graphical guest, with extra Return, Escape, Tab, Backspace, arrow and Ctrl-Alt-Delete buttons. Guest text assumes a US keyboard layout. Serial mode keeps its own text input. **Fullscreen** hides the app toolbar/debug overlays and shows the selected GUI or serial output, with small exit/keyboard controls. It uses browser fullscreen where supported and a viewport-filling fallback on iOS/embedded views.
+For relative mice such as KolibriOS PS/2 input, slide one finger to move the cursor, tap to click, and double-tap then drag to hold the mouse button. Guests with absolute pointing devices use direct touch. Two-finger gestures resize/move the viewport without clicking or dragging inside the guest. **Keyboard** focuses native device keyboard input without displaying a custom keyboard panel. Native text, Backspace, Return and composition are forwarded to the guest. Guest text assumes a US keyboard layout. Serial mode keeps its own text input. **Fullscreen** hides the app toolbar/debug overlays and shows the selected GUI or serial output, with small exit/keyboard/Fit controls. Entering fullscreen fills the available viewport as much as the guest aspect ratio permits; pinch and the corner handle still resize it, and two fingers pan it. It uses browser fullscreen where supported and a viewport-filling fallback on iOS/embedded views.
 
 ## Downloads and full-storage recovery
 
@@ -115,7 +115,7 @@ node --check app.js
 node --check runtime-config.js
 node --check browser-storage.js
 node --check disk-images.mjs
-node --test tests/runtime.test.cjs tests/network.test.mjs tests/ethernet.test.mjs tests/disk-images.test.mjs
+node --test tests/runtime.test.cjs tests/network.test.mjs tests/ethernet.test.mjs tests/disk-images.test.mjs tests/controls.test.cjs
 node scripts/prepare-pages.cjs
 ```
 
@@ -150,3 +150,9 @@ It verifies the app, clones `https://github.com/exocore-kernel/UTM-Web.git` into
 ## Licenses
 
 UTM assets/UI references retain the repository's [Apache-2.0 license](LICENSE). v64 uses [BSD-2-Clause](vendor/v64/LICENSE). Included SoftFloat and Zstandard notices are in `vendor/v64/SOFTFLOAT-LICENSE` and `vendor/v64/ZSTD-LICENSE`. Firmware licenses/source details are in `vendor/v64/bios/` and the upstream v64 BIOS build scripts. The previous unused v86 vendor directory is retained for provenance; the app and Pages artifact use v64.
+
+## Pointer verification
+
+`node --test tests/controls.test.cjs` checks scaled/bounded PS/2 packets, pacing, mouse release outside the window, capture loss, blur, touch taps/drags, pinch/pan and absolute input. The normal browser suite also checks native input focus and two-finger resize/pan in fullscreen.
+
+For optional KolibriOS testing, put an official floppy image at `tests/manual/kolibrios.img`, serve the app and open `tests/kolibri.html`. The test image used was 0.7.7.0-9254-g62b2b72c, SHA-256 `9e749e88eefa13f09dcce95553ce77495d182399ee4113559444b5e76a127f1a`, from [KolibriOS downloads](https://kolibrios.org/en/download). OS images remain excluded from Git and Pages.

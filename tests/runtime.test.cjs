@@ -151,3 +151,25 @@ test("profile responses use Apple MIME and attachment headers, including offline
     }
   }
 });
+
+
+test("native keyboard forwards typing, Return, deletion and composition once", () => {
+  const context = loadApp(), handlers = new Map(), text = [], codes = [];
+  const input = { value: "", setSelectionRange() {}, addEventListener(name, fn) { handlers.set(name, fn); } };
+  context.keyboardSession = { vmId: "custom-pc", emulator: { keyboard_send_text(value) { text.push(value); }, keyboard_send_scancodes(value) { codes.push(value); } } };
+  context.setTimeout = () => {};
+  vm.runInContext("runtimeSession = keyboardSession", context);
+  context.setupGuestKeyboard(input);
+  const emit = (name, extra = {}) => handlers.get(name)({ preventDefault() {}, stopPropagation() {}, ...extra });
+  input.value = "\u200bhello"; emit("input", { inputType: "insertText", data: "hello" });
+  emit("beforeinput", { inputType: "deleteContentBackward" });
+  emit("keydown", { key: "Enter" });
+  emit("compositionstart"); input.value = "\u200bcompose";
+  emit("input", { isComposing: true, data: "compose" });
+  assert.deepEqual(text, ["hello"]);
+  emit("compositionend", { data: "compose" });
+  emit("input", { inputType: "insertFromComposition", data: "compose" });
+  assert.deepEqual(text, ["hello", "compose"]);
+  assert.deepEqual(codes.map(value => [...value]), [[0x0e, 0x8e], [0x1c, 0x9c]]);
+  assert.equal(input.value, "\u200b", "keep a deletion target for mobile Backspace");
+});

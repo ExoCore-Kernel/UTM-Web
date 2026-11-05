@@ -1183,13 +1183,13 @@ function settingsPaneContent(pane) {
         <div class="group">
           ${selectRow("Mode", vm.displayMode || "serial", ["serial", "graphical"], "setDraft('displayMode', this.value); render()")}
         </div>
-        ${vm.displayMode === "graphical" ? `<p class="section-footer">Graphical mode uses v64's browser screen adapter. Tap the display to focus keyboard and pointer input.</p>` : ""}
+        ${vm.displayMode === "graphical" ? `<p class="section-footer">Graphical mode uses v64's browser screen adapter. Two fingers move and pinch to resize the display, including in fullscreen. Fit resets its position and size. Keyboard opens your device’s native keyboard. For a relative mouse, slide one finger to move, tap to click, and double-tap then drag to move guest windows.</p>` : ""}
       </section>
       <section class="section">
         <p class="section-title">Input</p>
         <div class="group">
-          ${row("Mouse", "Pointer capture")}
-          ${row("Touch", "Touchpad emulation")}
+          ${row("Mouse", "Pointer capture with automatic release")}
+          ${row("Touch", "Two-finger pan and pinch zoom")}
         </div>
       </section>
       <section class="section">
@@ -1614,7 +1614,8 @@ async function startLocalV86(vm, session) {
   delete options.initial_state;
   options.autostart = !restoreFile;
   options.screen = { container: screen, use_graphical_text: false };
-  options.disable_mouse = vm.displayMode === "serial";
+  // One Pointer Events controller owns both desktop and touch input.
+  options.disable_mouse = true;
   options.disable_keyboard = vm.displayMode === "serial";
   const emulator = new V86(options);
   window.emulator = emulator;
@@ -1651,6 +1652,7 @@ async function startLocalV86(vm, session) {
     } catch (error) { if (runtimeSession === session) failRuntime(vm, error.message || String(error)); }
   });
   listen("emulator-stopped", () => {
+    session.inputController?.reset();
     debugLog("event emulator-stopped");
   });
   listen("screen-set-size", size => {
@@ -1660,7 +1662,10 @@ async function startLocalV86(vm, session) {
     updateDebugPanel();
   });
   listen("screen-put-char", captureScreenChar);
-  listen("mouse-enable", enabled => { session.mouseEnabled = enabled ? "on" : "off"; });
+  const updateCursor = () => { screen.style.cursor = session.mouseEnabled === "on" || emulator.absolute_pointer_enabled ? "none" : "default"; };
+  listen("mouse-enable", enabled => { session.mouseEnabled = enabled ? "on" : "off"; if (!enabled) session.inputController?.reset(); updateCursor(); });
+  listen("vmware-absolute-mouse", updateCursor);
+  listen("absolute-pointer", updateCursor);
   listen("serial0-output-byte", byte => {
     (session.pendingSerial ||= []).push(byte);
     if (!session.serialTimer) session.serialTimer = setTimeout(() => {
@@ -1717,7 +1722,7 @@ function renderDisplay() {
   $("view").innerHTML = `
     <div id="displaySurface" class="display-surface ${mode}">
       <div id="guiWindow" class="gui-window" aria-label="Resizable virtual machine window">
-        <div id="v86Screen" class="v86-screen" tabindex="0" aria-label="Virtual machine display">
+        <div id="v86Screen" class="v86-screen" tabindex="0" aria-label="Virtual machine display" aria-description="Use two fingers to move and pinch to resize. For a relative mouse, slide one finger to move, tap to click, or double-tap and drag to hold the mouse button.">
           <div class="v86-text"></div><canvas></canvas>
         </div>
         <button id="guiResize" class="gui-resize" aria-label="Resize display: drag or use arrow keys" title="Drag to resize">◢</button>
@@ -1727,20 +1732,11 @@ function renderDisplay() {
         <input id="serialTextInput" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="send" aria-label="Serial input">
         <button type="submit">RET</button>
       </form>
-      <div id="guiKeyboard" class="gui-keyboard" hidden>
-        <input id="guiKeyboardInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-label="Type on the guest keyboard" placeholder="Type in your VM…">
-        <div class="guest-keys">
-          <button onclick="sendGuestKey('Escape')">Esc</button><button onclick="sendGuestKey('Tab')">Tab</button>
-          <button onclick="sendGuestKey('ControlAltDelete')">Ctrl Alt Del</button><button onclick="sendGuestKey('Backspace')">⌫</button>
-          <button onclick="sendGuestKey('ArrowLeft')">←</button><button onclick="sendGuestKey('ArrowDown')">↓</button>
-          <button onclick="sendGuestKey('ArrowUp')">↑</button><button onclick="sendGuestKey('ArrowRight')">→</button>
-          <button onclick="sendGuestKey('Enter')">Return</button>
-        </div>
-      </div>
+      <textarea id="guiKeyboardInput" class="native-keyboard-input" rows="1" inputmode="text" enterkeyhint="enter" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" tabindex="-1" aria-label="Native keyboard for the virtual machine"></textarea>
       <div class="floating-toolbar">
         <button onclick="saveActiveDisk()" aria-label="Save VM to browser">Save</button>
         <button onclick="showVMDownloads()" aria-label="Download VM files">Files</button>
-        <button onclick="toggleGuestKeyboard()" aria-label="Show touch keyboard">Keyboard</button>
+        <button onclick="toggleGuestKeyboard()" onpointerdown="event.preventDefault()" aria-label="Show device keyboard">Keyboard</button>
         <button onclick="toggleDisplayFullscreen()" aria-label="Enter fullscreen">Fullscreen</button>
         ${mode === "graphical" ? '<button onclick="resetGUIWindow()">Fit</button>' : ''}
         <button onclick="toggleDebugPanel()" id="debugToggle" aria-pressed="false">Debug</button>
@@ -1748,7 +1744,8 @@ function renderDisplay() {
         <button onclick="stopDisplay()">Close</button>
       </div>
       <div class="fullscreen-controls">
-        <button onclick="toggleGuestKeyboard()" aria-label="Show touch keyboard">Keyboard</button>
+        ${mode === "graphical" ? '<button onclick="resetGUIWindow()" aria-label="Reset display position and zoom">Fit</button>' : ''}
+        <button onclick="toggleGuestKeyboard()" onpointerdown="event.preventDefault()" aria-label="Show device keyboard">Keyboard</button>
         <button onclick="toggleDisplayFullscreen()" aria-label="Exit fullscreen">Exit Fullscreen</button>
       </div>
       <div class="runtime-chip"></div>
@@ -1777,7 +1774,6 @@ function syncDisplayControls() {
   if (chip) chip.textContent = session.error || `${session.status} · v64 · ${vm.architecture}`;
   $("debugToggle")?.setAttribute("aria-pressed", String(!!session.debugVisible));
   if ($("debugMount")) $("debugMount").innerHTML = session.debugVisible ? renderDebugPanel(session) : "";
-  if ($("guiKeyboard")) $("guiKeyboard").hidden = !session.keyboardVisible || vm.displayMode !== "graphical";
   updateDebugPanel();
   fitGUIWindow();
 }
@@ -1786,9 +1782,11 @@ async function toggleDisplayFullscreen() {
   if (!runtimeSession) return;
   const session = runtimeSession;
   session.fullscreen = !session.fullscreen;
+  if (session.fullscreen) { session.displayZoom = 1; session.panX = session.panY = 0; }
+  $("displaySurface")?.style.removeProperty("height");
   syncDisplayControls();
   try {
-    if (session.fullscreen && !document.fullscreenElement) await $("app").requestFullscreen?.();
+    if (session.fullscreen && !document.fullscreenElement) await $("app").requestFullscreen?.({ navigationUI: "hide" });
     else if (!session.fullscreen && document.fullscreenElement) await document.exitFullscreen?.();
   } catch { /* iOS and embedded views use the same viewport-filling CSS fallback. */ }
   fitGUIWindow();
@@ -1796,32 +1794,50 @@ async function toggleDisplayFullscreen() {
 
 function toggleGuestKeyboard() {
   if (!runtimeSession) return;
-  if (vmById(runtimeSession.vmId).displayMode === "serial") {
-    $("serialTextInput")?.focus();
-    return;
+  const serial = vmById(runtimeSession.vmId).displayMode === "serial";
+  const input = $(serial ? "serialTextInput" : "guiKeyboardInput");
+  if (!input) return;
+  if (document.activeElement === input && runtimeSession.keyboardVisible) input.blur();
+  else {
+    runtimeSession.keyboardVisible = true;
+    // Focus synchronously in the button tap so iOS opens its system keyboard.
+    input.focus({ preventScroll: true });
   }
-  runtimeSession.keyboardVisible = !runtimeSession.keyboardVisible;
-  syncDisplayControls();
-  if (runtimeSession.keyboardVisible) $("guiKeyboardInput")?.focus();
-  else $("guiKeyboardInput")?.blur();
+}
+
+function displayBounds() {
+  const surface = $("displaySurface");
+  if (!surface) return { left: 0, top: 0, width: 1, height: 1 };
+  const box = surface.getBoundingClientRect(), style = getComputedStyle(surface);
+  const left = parseFloat(style.paddingLeft) || 0, right = parseFloat(style.paddingRight) || 0;
+  const top = parseFloat(style.paddingTop) || 0, bottom = parseFloat(style.paddingBottom) || 0;
+  return { left: box.left + left, top: box.top + top, width: Math.max(1, box.width - left - right), height: Math.max(1, box.height - top - bottom) };
 }
 
 function fitGUIWindow() {
-  const session = runtimeSession, surface = $("displaySurface"), frame = $("guiWindow");
-  if (!session || !surface || !frame) return;
-  const bounds = surface.getBoundingClientRect();
-  const width = Math.max(1, bounds.width - (session.fullscreen ? 0 : 24));
-  const height = Math.max(1, bounds.height - (session.fullscreen ? 0 : 108) - (session.keyboardVisible ? 140 : 0));
+  const session = runtimeSession, frame = $("guiWindow");
+  if (!session || !frame || !$("displaySurface")) return;
+  const bounds = displayBounds();
   const ratio = (session.guestWidth || 4) / (session.guestHeight || 3);
-  const wanted = session.fullscreen ? width : session.windowWidth || width;
-  const fittedWidth = Math.min(wanted, width, height * ratio);
-  frame.style.width = `${Math.max(1, fittedWidth)}px`;
-  frame.style.height = `${Math.max(1, fittedWidth / ratio)}px`;
+  const layout = UTMControls.layout(bounds.width, bounds.height, ratio, session.displayZoom || 1, session.panX || 0, session.panY || 0);
+  session.displayZoom = layout.zoom; session.panX = layout.x; session.panY = layout.y;
+  session.fitWidth = layout.baseWidth;
+  frame.style.width = `${layout.width}px`;
+  frame.style.height = `${layout.height}px`;
+  const surface = $("displaySurface").getBoundingClientRect();
+  frame.style.left = `${bounds.left - surface.left + bounds.width / 2 + layout.x}px`;
+  frame.style.top = `${bounds.top - surface.top + bounds.height / 2 + layout.y}px`;
+}
+
+function transformGUIWindow(view) {
+  if (!runtimeSession) return;
+  runtimeSession.displayZoom = view.zoom;
+  runtimeSession.panX = view.x; runtimeSession.panY = view.y;
+  fitGUIWindow();
 }
 
 function resetGUIWindow() {
-  if (runtimeSession) runtimeSession.windowWidth = null;
-  fitGUIWindow();
+  transformGUIWindow({ zoom: 1, x: 0, y: 0 });
 }
 
 function setupGUIResize(handle) {
@@ -1829,13 +1845,13 @@ function setupGUIResize(handle) {
   let drag;
   handle.addEventListener("pointerdown", event => {
     event.preventDefault(); event.stopPropagation();
-    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, width: $("guiWindow").getBoundingClientRect().width };
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, width: $("guiWindow").getBoundingClientRect().width, zoom: runtimeSession?.displayZoom || 1 };
     handle.setPointerCapture(event.pointerId);
   });
   handle.addEventListener("pointermove", event => {
     if (!drag || drag.id !== event.pointerId || !runtimeSession) return;
     const ratio = (runtimeSession.guestWidth || 4) / (runtimeSession.guestHeight || 3);
-    runtimeSession.windowWidth = Math.max(160, drag.width + (event.clientX - drag.x) + (event.clientY - drag.y) * ratio);
+    runtimeSession.displayZoom = drag.zoom * Math.max(80, drag.width + (event.clientX - drag.x) + (event.clientY - drag.y) * ratio) / drag.width;
     fitGUIWindow();
   });
   const end = () => { drag = null; };
@@ -1846,32 +1862,48 @@ function setupGUIResize(handle) {
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key) || !runtimeSession) return;
     event.preventDefault(); event.stopPropagation();
     const direction = ["ArrowLeft", "ArrowDown"].includes(event.key) ? -1 : 1;
-    runtimeSession.windowWidth = Math.max(160, $("guiWindow").getBoundingClientRect().width + direction * 32);
+    runtimeSession.displayZoom = Math.max(.25, (runtimeSession.displayZoom || 1) + direction * 32 / (runtimeSession.fitWidth || 320));
     fitGUIWindow();
   });
 }
 
 function setupGuestKeyboard(input) {
   if (!input) return;
-  const flush = () => {
-    if (input.value && runtimeSession?.emulator) {
-      sendKeyboardInput(runtimeSession.emulator, input.value);
-      input.value = "";
-    }
-  };
-  input.addEventListener("input", event => { if (!event.isComposing) flush(); });
-  input.addEventListener("compositionend", flush);
+  const session = runtimeSession, sentinel = "\u200b";
+  let composing = false, committed = null;
+  const reset = () => { input.value = sentinel; input.setSelectionRange(1, 1); };
+  const send = text => { if (text && runtimeSession === session && session.emulator) sendKeyboardInput(session.emulator, text); };
+  reset();
+  input.addEventListener("focus", () => { if (runtimeSession === session) session.keyboardVisible = true; reset(); });
+  input.addEventListener("blur", () => { if (runtimeSession === session) session.keyboardVisible = false; });
+  input.addEventListener("compositionstart", () => { composing = true; committed = null; });
+  input.addEventListener("compositionend", event => {
+    composing = false;
+    committed = event.data ?? input.value.replaceAll(sentinel, "");
+    send(committed); reset();
+    setTimeout(() => { committed = null; }, 0);
+  });
   input.addEventListener("beforeinput", event => {
-    if (event.inputType === "deleteContentBackward") { event.preventDefault(); sendGuestKey("Backspace"); }
-    else if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") { event.preventDefault(); sendGuestKey("Enter"); }
+    if (composing || event.isComposing) return;
+    if (event.inputType === "deleteContentBackward") { event.preventDefault(); sendGuestKey("Backspace"); reset(); }
+    else if (["insertLineBreak", "insertParagraph"].includes(event.inputType)) { event.preventDefault(); sendGuestKey("Enter"); reset(); }
+  });
+  input.addEventListener("input", event => {
+    if (composing || event.isComposing) return;
+    const text = input.value.replaceAll(sentinel, "");
+    // Some keyboards emit a final input after compositionend. Forward it once.
+    if (committed !== null && event.data === committed) { committed = null; reset(); return; }
+    committed = null;
+    if (text) send(text);
+    else if (event.inputType === "deleteContentBackward") sendGuestKey("Backspace");
+    reset();
   });
   input.addEventListener("keydown", event => {
-    if (["Enter", "Tab", "Escape", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key) && !event.isComposing) {
-      event.preventDefault(); event.stopPropagation(); sendGuestKey(event.key);
+    if (event.isComposing || composing || event.keyCode === 229) return;
+    if (["Enter", "Tab", "Escape", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation(); sendGuestKey(event.key); reset();
     }
   });
-  // Keep the phone keyboard open while tapping the extra guest keys.
-  $("guiKeyboard").addEventListener("pointerdown", event => { if (event.target.closest("button")) event.preventDefault(); });
 }
 
 function sendGuestKey(key) {
@@ -1962,42 +1994,25 @@ function enableAutoBootEnter() {
 }
 
 function setupV86Input(screen) {
-  if (!screen) return;
-  let touch;
-  const send = (name, value) => runtimeSession?.emulator?.bus?.send(name, value);
-  const position = event => {
-    const canvas = screen.querySelector("canvas");
-    const rect = (canvas?.getBoundingClientRect().width ? canvas : screen).getBoundingClientRect();
-    send("mouse-absolute", [Math.max(0, Math.min(rect.width, event.clientX - rect.left)), Math.max(0, Math.min(rect.height, event.clientY - rect.top)), rect.width, rect.height]);
-  };
-  screen.addEventListener("pointerdown", event => {
-    screen.focus({ preventScroll: true });
-    if (event.pointerType !== "touch" || touch) return;
-    event.preventDefault();
-    touch = { id: event.pointerId, x: event.clientX, y: event.clientY };
-    screen.setPointerCapture(event.pointerId);
-    position(event);
-    send("mouse-click", [true, false, false]);
+  const session = runtimeSession;
+  if (!screen || !session || vmById(session.vmId).displayMode !== "graphical") return;
+  session.inputController?.destroy();
+  session.inputController = UTMControls.pointerInput($("displaySurface"), screen, {
+    active: () => runtimeSession === session && session.status === "running" && !!session.emulator && (!session.emulator.is_running || session.emulator.is_running()),
+    send: (name, value) => session.emulator?.bus?.send(name, value),
+    absolute: () => !!session.emulator?.absolute_pointer_enabled,
+    size: () => ({ width: session.guestWidth || 640, height: session.guestHeight || 480 }),
+    focus: touch => { if (!touch || !session.keyboardVisible) screen.focus({ preventScroll: true }); },
+    bounds: displayBounds,
+    view: () => ({ zoom: session.displayZoom || 1, x: session.panX || 0, y: session.panY || 0 }),
+    transform: transformGUIWindow,
+    zoomAt: (scale, x, y) => {
+      const bounds = displayBounds();
+      transformGUIWindow({ zoom: (session.displayZoom || 1) * scale,
+        x: (session.panX || 0) * scale + (x - bounds.left - bounds.width / 2) * (1 - scale),
+        y: (session.panY || 0) * scale + (y - bounds.top - bounds.height / 2) * (1 - scale) });
+    }
   });
-  screen.addEventListener("pointermove", event => {
-    if (!touch || touch.id !== event.pointerId) return;
-    event.preventDefault();
-    send("mouse-delta", [event.clientX - touch.x, touch.y - event.clientY]);
-    position(event);
-    touch.x = event.clientX; touch.y = event.clientY;
-  });
-  const release = event => {
-    if (!touch || touch.id !== event.pointerId) return;
-    send("mouse-click", [false, false, false]); touch = null;
-  };
-  screen.addEventListener("pointerup", release);
-  screen.addEventListener("pointercancel", release);
-  screen.addEventListener("lostpointercapture", release);
-  // Pointer events above provide tap/drag for PC and ARM tablet input. Suppress
-  // the runtime's legacy touch path to avoid duplicate deltas and synthetic clicks.
-  for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"]) screen.addEventListener(type, event => {
-    event.preventDefault(); event.stopPropagation();
-  }, { passive: false });
 }
 
 function setupConsoleInput(element) {
@@ -2007,6 +2022,9 @@ function setupConsoleInput(element) {
     if (event.pointerType === "touch") $("serialTextInput")?.focus();
   });
   element.addEventListener("keydown", sendConsoleKey);
+  const input = $("serialTextInput");
+  input?.addEventListener("focus", () => { if (runtimeSession) runtimeSession.keyboardVisible = true; });
+  input?.addEventListener("blur", () => { if (runtimeSession) runtimeSession.keyboardVisible = false; });
 }
 
 function sendConsoleKey(event) {
@@ -2145,6 +2163,7 @@ async function stopDisplay(skipSave = false) {
   if (session) {
     session.cancelled = true; clearTimeout(session.startTimer); clearTimeout(session.serialTimer);
     session.resizeObserver?.disconnect();
+    session.inputController?.destroy();
     if (session.fullscreen && document.fullscreenElement) await document.exitFullscreen?.().catch(() => {});
   }
   $("app").classList.remove("display-fullscreen");
@@ -2538,7 +2557,7 @@ async function ensureIsolation() {
 }
 
 function registerIsolationWorker() {
-  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261103-install2", {
+  return navigator.serviceWorker.register("coi-serviceworker.js?v=v64-20261105-input", {
     updateViaCache: "none"
   });
 }
